@@ -1,4 +1,4 @@
-# monad-failover
+# Monad-failover
 
 Single script to promote a synced Monad full node to validator.
 
