@@ -59,6 +59,12 @@ need_cmd monad-sign-name-record
 [ -f "$NODE_TOML" ] || die "node.toml not found: $NODE_TOML"
 [ -f "$ENV_FILE" ]  || die ".env not found: $ENV_FILE"
 
+# ── kernel check ─────────────────────────────────────
+KVER="$(uname -r)"
+if [[ "$KVER" =~ 6\.8\.0\.(5[6-9])-generic ]]; then
+  die "Kernel $KVER has a known bug that causes Monad to hang. Upgrade to 6.8.0.60+ first."
+fi
+
 # ── start ──────────────────────────────────────────────
 clear 2>/dev/null || true
 header
@@ -131,6 +137,9 @@ for f in node.toml id-secp id-bls; do
     cp -a "$CONFIG_DIR/$f" "$BACKUP_DIR/"
   fi
 done
+if [ -f "$MONAD_HOME/pubkey-secp-bls" ]; then
+  cp -a "$MONAD_HOME/pubkey-secp-bls" "$BACKUP_DIR/"
+fi
 ok "Config backed up to $BACKUP_DIR"
 
 # ── download validator node.toml ───────────────────────
@@ -304,4 +313,7 @@ echo "  journalctl -fu monad-bft"
 if command -v monad-status >/dev/null 2>&1; then
   echo "  monad-status"
 fi
+echo
+warn "If you have downstream full nodes, they must update this validator's"
+echo "  name record in their node.toml to maintain connectivity."
 echo

@@ -40,6 +40,7 @@ Keys are never stored in the script or written to disk outside the keystore.
 
 - Synced full node ([installation guide](https://docs.monad.xyz/node-ops/full-node-installation))
 - Monad >= 0.12.x
+- Linux kernel >= 6.8.0.60 (v6.8.0.56-59 has a known Monad hang bug)
 - `monad-keystore`, `monad-sign-name-record` on PATH
 - `aria2c` installed (for snapshot download)
 - `/home/monad/.env` with `KEYSTORE_PASSWORD` set
@@ -169,10 +170,16 @@ Check status:
 ## Safety
 
 - Refuses to run if the node is not in-sync
+- Refuses to run on known-buggy kernel versions (6.8.0.56-59)
 - Warns if RPC 8080 is exposed to the internet
-- Backs up existing config before any changes
+- Backs up existing config (including pubkey-secp-bls) before any changes
 - Keys are entered manually and never logged
 - Confirms at every critical step before proceeding
+
+## After promotion
+
+If you have downstream full nodes connected to this validator, they must update the
+validator's name record in their `node.toml` to maintain connectivity.
 
 ## Reference
 
