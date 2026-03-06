@@ -227,12 +227,7 @@ echo "${BOLD}NODE ADDRESS${RESET}"
 
 IP="$(curl -s4 ifconfig.me || true)"
 [ -n "$IP" ] || die "Could not detect public IP"
-echo "Detected IP: ${BOLD}$IP${RESET}"
-read -r -p "Use this IP? (Y/n): " ip_confirm
-case "${ip_confirm,,}" in
-  n|no) read -r -p "Enter IP: " IP; [ -n "$IP" ] || die "Empty IP";;
-esac
-ok "Using: $IP"
+ok "Detected IP: $IP"
 
 # ── sign name record ──────────────────────────────────
 step "SIGN NAME RECORD"
