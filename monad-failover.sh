@@ -5,6 +5,7 @@
 # Usage:
 #   chmod +x monad-failover.sh
 #   ./monad-failover.sh
+#   ./monad-failover.sh --resume    # resume from last completed step
 #
 # Manual run only. No daemon, no auto-failover.
 # Prompts for: seq_num, SECP IKM, BLS IKM.
@@ -21,6 +22,9 @@ SECP_KEY="$CONFIG_DIR/id-secp"
 BLS_KEY="$CONFIG_DIR/id-bls"
 VALIDATORS_FILE="$CONFIG_DIR/validators/validators.toml"
 MF_BUCKET="https://bucket.monadinfra.com"
+
+STATE_DIR="$MONAD_HOME/.monad-failover"
+STATE_FILE="$STATE_DIR/state"
 
 # ── ui helpers ─────────────────────────────────────────
 BOLD=$'\033[1m'
@@ -47,6 +51,39 @@ die()  { echo "${RED}✗${RESET} $*" >&2; exit 1; }
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Missing command: $1"; }
 
+# ── state / resume helpers ────────────────────────────
+save_state() {
+  local key="$1" val="$2"
+  mkdir -p "$STATE_DIR"
+  if grep -q "^${key}=" "$STATE_FILE" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=${val}|" "$STATE_FILE"
+  else
+    echo "${key}=${val}" >> "$STATE_FILE"
+  fi
+}
+
+load_state() {
+  local key="$1"
+  grep "^${key}=" "$STATE_FILE" 2>/dev/null | cut -d '=' -f2- || true
+}
+
+clear_state() {
+  rm -f "$STATE_FILE"
+}
+
+completed_step() {
+  local current
+  current="$(load_state "last_step")"
+  [[ -n "$current" ]] && [[ "$current" -ge "$1" ]]
+}
+
+RESUME=false
+for arg in "$@"; do
+  case "$arg" in
+    --resume) RESUME=true ;;
+  esac
+done
+
 # ── preflight ──────────────────────────────────────────
 need_cmd curl
 need_cmd systemctl
@@ -67,230 +104,313 @@ header
 source "$ENV_FILE"
 [ -n "${KEYSTORE_PASSWORD:-}" ] || die "KEYSTORE_PASSWORD not set in $ENV_FILE"
 
-# ── node sync check ───────────────────────────────────
-step "NODE SYNC CHECK"
-
-if command -v monad-status >/dev/null 2>&1; then
-  STATUS_OUT="$(monad-status 2>/dev/null || true)"
-  SYNC_STATUS="$(echo "$STATUS_OUT" | grep -m1 'status:' | awk '{print $2}')"
-  BLOCK_DIFF="$(echo "$STATUS_OUT" | grep -m1 'blockDifference:' | awk '{print $2}')"
-
-  if [[ "$SYNC_STATUS" == "in-sync" ]]; then
-    ok "Node status: in-sync (block difference: ${BLOCK_DIFF:-0})"
+# ── resume check ──────────────────────────────────────
+if $RESUME; then
+  LAST_STEP="$(load_state "last_step")"
+  if [[ -z "$LAST_STEP" ]]; then
+    warn "No previous run found. Starting fresh."
+    RESUME=false
   else
-    warn "Node status: ${SYNC_STATUS:-unknown}"
-    echo
-    echo "Backup node must be fully synced before promotion."
-    echo "Run 'monad-status' to check details."
-    exit 1
+    ok "Resuming from step $((LAST_STEP + 1)) (last completed: $LAST_STEP)"
+    # Restore saved values
+    NETWORK="$(load_state "network")"
+    NEW_SEQ="$(load_state "new_seq")"
+    SECP_PUB="$(load_state "secp_pub")"
+    BLS_PUB="$(load_state "bls_pub")"
+    IP="$(load_state "ip")"
+    SELF_ADDRESS="$(load_state "self_address")"
+    SELF_SIG="$(load_state "self_sig")"
+    BENEFICIARY="$(load_state "beneficiary")"
+    BACKUP_DIR="$(load_state "backup_dir")"
   fi
-else
-  warn "monad-status not installed, skipping sync check"
-  echo "Install: curl -sSL $MF_BUCKET/scripts/monad-status.sh -o /usr/local/bin/monad-status && chmod +x /usr/local/bin/monad-status"
-fi
-
-# ── rpc security check ────────────────────────────────
-step "RPC SECURITY CHECK"
-
-if ss -ltn 2>/dev/null | grep -q ":8080"; then
-  LISTEN_ADDR="$(ss -ltn | grep ':8080' | awk '{print $4}' | head -1)"
-  if [[ "$LISTEN_ADDR" == *"0.0.0.0"* ]] || [[ "$LISTEN_ADDR" == *"*"* ]]; then
-    warn "RPC port 8080 is publicly listening"
-    echo "  Validators should not expose RPC publicly."
-    echo "  Consider binding to localhost or adding a firewall rule."
-    echo
+elif [[ -f "$STATE_FILE" ]]; then
+  LAST_STEP="$(load_state "last_step")"
+  if [[ -n "$LAST_STEP" && "$LAST_STEP" -lt 10 ]]; then
+    warn "Previous run stopped at step $LAST_STEP"
+    echo "  Run with --resume to continue, or press ENTER to start fresh."
+    read -r -p "  Start fresh? (y/N): " fresh_confirm
+    case "${fresh_confirm,,}" in
+      y|yes) clear_state ;;
+      *) echo "  Use: ./monad-failover.sh --resume"; exit 0 ;;
+    esac
   else
-    ok "RPC not publicly exposed"
+    clear_state
   fi
-else
-  ok "RPC port 8080 not active"
 fi
 
-# ── network detect ─────────────────────────────────────
-NETWORK="$(grep '^network_name' "$NODE_TOML" | cut -d '"' -f2 || true)"
-if [[ -z "$NETWORK" ]]; then
-  die "Could not detect network_name from node.toml"
-fi
-ok "Network: $NETWORK"
+# ── step 1: node sync check ─────────────────────────
+if ! $RESUME || ! completed_step 1; then
+  step "NODE SYNC CHECK"
 
-echo
-echo "This will promote this full node to validator."
-echo "Make sure the original validator services are ${BOLD}STOPPED${RESET}."
-echo
-read -r -p "Continue? (y/N): " confirm
-case "${confirm,,}" in y|yes) ;; *) die "Aborted.";; esac
+  if command -v monad-status >/dev/null 2>&1; then
+    STATUS_OUT="$(monad-status 2>/dev/null || true)"
+    SYNC_STATUS="$(echo "$STATUS_OUT" | grep -m1 'status:' | awk '{print $2}')"
+    BLOCK_DIFF="$(echo "$STATUS_OUT" | grep -m1 'blockDifference:' | awk '{print $2}')"
 
-# ── backup existing config ─────────────────────────────
-step "BACKUP CURRENT CONFIG"
-
-BACKUP_DIR="/opt/monad/backup/failover-$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$BACKUP_DIR"
-
-for f in node.toml id-secp id-bls; do
-  if [ -f "$CONFIG_DIR/$f" ]; then
-    cp -a "$CONFIG_DIR/$f" "$BACKUP_DIR/"
+    if [[ "$SYNC_STATUS" == "in-sync" ]]; then
+      ok "Node status: in-sync (block difference: ${BLOCK_DIFF:-0})"
+    else
+      warn "Node status: ${SYNC_STATUS:-unknown}"
+      echo
+      echo "Backup node must be fully synced before promotion."
+      echo "Run 'monad-status' to check details."
+      exit 1
+    fi
+  else
+    warn "monad-status not installed, skipping sync check"
+    echo "Install: curl -sSL $MF_BUCKET/scripts/monad-status.sh -o /usr/local/bin/monad-status && chmod +x /usr/local/bin/monad-status"
   fi
-done
-if [ -f "$MONAD_HOME/pubkey-secp-bls" ]; then
-  cp -a "$MONAD_HOME/pubkey-secp-bls" "$BACKUP_DIR/"
-fi
-ok "Config backed up to $BACKUP_DIR"
 
-# ── download validator node.toml ───────────────────────
-step "DOWNLOAD VALIDATOR node.toml"
-
-echo "Downloading validator config template for $NETWORK..."
-curl -fsSL -o "$NODE_TOML" "$MF_BUCKET/config/$NETWORK/latest/node.toml"
-ok "Validator node.toml downloaded"
-
-# ── beneficiary ───────────────────────────────────────
-bar
-echo "${BOLD}BENEFICIARY${RESET}"
-echo "Enter the beneficiary address from the failed validator's node.toml"
-read -r -p "beneficiary: " BENEFICIARY
-if [[ -n "$BENEFICIARY" ]]; then
-  sed -i "s|^beneficiary.*|beneficiary = \"$BENEFICIARY\"|" "$NODE_TOML"
-  ok "Beneficiary set: $BENEFICIARY"
-else
-  warn "No beneficiary entered. Check node.toml manually."
+  save_state "last_step" "1"
 fi
 
-# ── seq_num ────────────────────────────────────────────
-bar
-echo "${BOLD}SEQ NUM${RESET}"
-echo "Enter last seq_num from failed validator's node.toml (example: 0)"
-read -r -p "seq_num: " LAST_SEQ
-[[ "$LAST_SEQ" =~ ^[0-9]+$ ]] || die "Must be a number"
-NEW_SEQ=$((LAST_SEQ + 1))
-ok "New seq_num: $NEW_SEQ"
+# ── step 2: rpc security check ──────────────────────
+if ! $RESUME || ! completed_step 2; then
+  step "RPC SECURITY CHECK"
 
-# ── key import ─────────────────────────────────────────
-bar
-echo "${BOLD}KEY IMPORT${RESET}"
-echo "Paste IKM hex values. Input is hidden."
-echo
+  if ss -ltn 2>/dev/null | grep -q ":8080"; then
+    LISTEN_ADDR="$(ss -ltn | grep ':8080' | awk '{print $4}' | head -1)"
+    if [[ "$LISTEN_ADDR" == *"0.0.0.0"* ]] || [[ "$LISTEN_ADDR" == *"*"* ]]; then
+      warn "RPC port 8080 is publicly listening"
+      echo "  Validators should not expose RPC publicly."
+      echo "  Consider binding to localhost or adding a firewall rule."
+      echo
+    else
+      ok "RPC not publicly exposed"
+    fi
+  else
+    ok "RPC port 8080 not active"
+  fi
 
-read -r -s -p "SECP IKM_HEX: " SECP_IKM; echo
-[ -n "$SECP_IKM" ] || die "Empty SECP IKM"
+  save_state "last_step" "2"
+fi
 
-read -r -s -p "BLS  IKM_HEX: " BLS_IKM; echo
-[ -n "$BLS_IKM" ] || die "Empty BLS IKM"
+# ── step 3: network detect + confirm ────────────────
+if ! $RESUME || ! completed_step 3; then
+  NETWORK="$(grep '^network_name' "$NODE_TOML" | cut -d '"' -f2 || true)"
+  if [[ -z "$NETWORK" ]]; then
+    die "Could not detect network_name from node.toml"
+  fi
+  ok "Network: $NETWORK"
 
-step "Importing SECP key"
-monad-keystore import \
-  --ikm "$SECP_IKM" \
-  --keystore-path "$SECP_KEY" \
-  --password "$KEYSTORE_PASSWORD"
-ok "SECP key imported"
+  echo
+  echo "This will promote this full node to validator."
+  echo "Make sure the original validator services are ${BOLD}STOPPED${RESET}."
+  echo
+  read -r -p "Continue? (y/N): " confirm
+  case "${confirm,,}" in y|yes) ;; *) die "Aborted.";; esac
 
-step "Importing BLS key"
-monad-keystore import \
-  --ikm "$BLS_IKM" \
-  --keystore-path "$BLS_KEY" \
-  --password "$KEYSTORE_PASSWORD"
-ok "BLS key imported"
+  save_state "network" "$NETWORK"
+  save_state "last_step" "3"
+fi
 
-# ── verify keys ────────────────────────────────────────
-bar
-echo "${BOLD}VERIFY KEYS${RESET}"
+# ── step 4: backup existing config ──────────────────
+if ! $RESUME || ! completed_step 4; then
+  step "BACKUP CURRENT CONFIG"
 
-SECP_PUB="$(monad-keystore recover \
-  --password "$KEYSTORE_PASSWORD" \
-  --keystore-path "$SECP_KEY" \
-  --key-type secp 2>/dev/null | grep -i 'Secp public key' | awk '{print $NF}')"
+  BACKUP_DIR="/opt/monad/backup/failover-$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$BACKUP_DIR"
 
-BLS_PUB="$(monad-keystore recover \
-  --password "$KEYSTORE_PASSWORD" \
-  --keystore-path "$BLS_KEY" \
-  --key-type bls 2>/dev/null | grep -i 'BLS public key' | awk '{print $NF}')"
+  for f in node.toml id-secp id-bls; do
+    if [ -f "$CONFIG_DIR/$f" ]; then
+      cp -a "$CONFIG_DIR/$f" "$BACKUP_DIR/"
+    fi
+  done
+  if [ -f "$MONAD_HOME/pubkey-secp-bls" ]; then
+    cp -a "$MONAD_HOME/pubkey-secp-bls" "$BACKUP_DIR/"
+  fi
+  ok "Config backed up to $BACKUP_DIR"
 
-[ -n "$SECP_PUB" ] || die "Could not recover SECP public key"
-[ -n "$BLS_PUB" ]  || die "Could not recover BLS public key"
+  save_state "backup_dir" "$BACKUP_DIR"
+  save_state "last_step" "4"
+fi
 
-TS="$(date +%H:%M:%S)"
-echo "[$TS] INFO  SECP Pubkey: ${SECP_PUB:0:46}..."
-echo "[$TS] INFO  BLS  Pubkey: ${BLS_PUB:0:46}..."
-echo
-read -r -p "Do these match your validator keys? (y/N): " key_confirm
-case "${key_confirm,,}" in y|yes) ;; *) die "Key mismatch. Aborting.";; esac
-ok "Keys verified"
+# ── step 5: download validator node.toml ─────────────
+if ! $RESUME || ! completed_step 5; then
+  step "DOWNLOAD VALIDATOR node.toml"
 
-# ── ip detect ──────────────────────────────────────────
-bar
-echo "${BOLD}NODE ADDRESS${RESET}"
+  echo "Downloading validator config template for $NETWORK..."
+  curl -fsSL -o "$NODE_TOML" "$MF_BUCKET/config/$NETWORK/latest/node.toml"
+  ok "Validator node.toml downloaded"
 
-IP="$(curl -s4 ifconfig.me || true)"
-[ -n "$IP" ] || die "Could not detect public IP"
-ok "Detected IP: $IP"
+  save_state "last_step" "5"
+fi
 
-# ── sign name record ──────────────────────────────────
-step "SIGN NAME RECORD"
+# ── step 6: beneficiary + seq_num + key import + verify ──
+if ! $RESUME || ! completed_step 6; then
+  # beneficiary
+  bar
+  echo "${BOLD}BENEFICIARY${RESET}"
+  echo "Enter the beneficiary address from the failed validator's node.toml"
+  read -r -p "beneficiary: " BENEFICIARY
+  if [[ -n "$BENEFICIARY" ]]; then
+    sed -i "s|^beneficiary.*|beneficiary = \"$BENEFICIARY\"|" "$NODE_TOML"
+    ok "Beneficiary set: $BENEFICIARY"
+  else
+    warn "No beneficiary entered. Check node.toml manually."
+  fi
 
-SIGN_OUT="$(monad-sign-name-record \
-  --address "$IP:8000" \
-  --node-config "$NODE_TOML" \
-  --authenticated-udp-port 8001 \
-  --self-record-seq-num "$NEW_SEQ" \
-  --keystore-path "$SECP_KEY" \
-  --password "$KEYSTORE_PASSWORD")"
+  # seq_num
+  bar
+  echo "${BOLD}SEQ NUM${RESET}"
+  echo "Enter last seq_num from failed validator's node.toml (example: 0)"
+  read -r -p "seq_num: " LAST_SEQ
+  [[ "$LAST_SEQ" =~ ^[0-9]+$ ]] || die "Must be a number"
+  NEW_SEQ=$((LAST_SEQ + 1))
+  ok "New seq_num: $NEW_SEQ"
 
-SELF_ADDRESS="$(echo "$SIGN_OUT" | grep '^self_address ' | cut -d '"' -f2)"
-SELF_SIG="$(echo "$SIGN_OUT" | grep '^self_name_record_sig ' | cut -d '"' -f2)"
+  # key import
+  bar
+  echo "${BOLD}KEY IMPORT${RESET}"
+  echo "Paste IKM hex values. Input is hidden."
+  echo
 
-[ -n "$SELF_ADDRESS" ] || die "Failed to parse self_address from name record output"
-[ -n "$SELF_SIG" ]     || die "Failed to parse self_name_record_sig from output"
-ok "Name record signed"
+  read -r -s -p "SECP IKM_HEX: " SECP_IKM; echo
+  [ -n "$SECP_IKM" ] || die "Empty SECP IKM"
 
-# ── patch node.toml ───────────────────────────────────
-step "PATCH node.toml"
+  read -r -s -p "BLS  IKM_HEX: " BLS_IKM; echo
+  [ -n "$BLS_IKM" ] || die "Empty BLS IKM"
 
-sed -i "s|^self_address.*|self_address = \"$SELF_ADDRESS\"|" "$NODE_TOML"
-sed -i "s|^self_record_seq_num.*|self_record_seq_num = $NEW_SEQ|" "$NODE_TOML"
-sed -i "s|^self_name_record_sig.*|self_name_record_sig = \"$SELF_SIG\"|" "$NODE_TOML"
-ok "node.toml updated"
+  step "Importing SECP key"
+  monad-keystore import \
+    --ikm "$SECP_IKM" \
+    --keystore-path "$SECP_KEY" \
+    --password "$KEYSTORE_PASSWORD"
+  ok "SECP key imported"
 
-# ── summary ────────────────────────────────────────────
-bar
-echo "${BOLD}SUMMARY${RESET}"
-echo "  Network:     $NETWORK"
-echo "  IP:          $SELF_ADDRESS"
-echo "  seq_num:     $NEW_SEQ"
-echo "  Beneficiary: ${BENEFICIARY:-not set}"
-echo "  SECP key:    ${SECP_PUB:0:20}..."
-echo "  BLS  key:    ${BLS_PUB:0:20}..."
-echo
-read -r -p "Proceed with hard reset and start? (y/N): " final_confirm
-case "${final_confirm,,}" in y|yes) ;; *) die "Aborted.";; esac
+  step "Importing BLS key"
+  monad-keystore import \
+    --ikm "$BLS_IKM" \
+    --keystore-path "$BLS_KEY" \
+    --password "$KEYSTORE_PASSWORD"
+  ok "BLS key imported"
 
-# ── stop services ──────────────────────────────────────
-step "STOP SERVICES"
-systemctl stop monad-bft monad-execution monad-rpc 2>/dev/null || true
-ok "Services stopped"
+  # verify keys
+  bar
+  echo "${BOLD}VERIFY KEYS${RESET}"
 
-# ── hard reset ─────────────────────────────────────────
-step "HARD RESET"
+  SECP_PUB="$(monad-keystore recover \
+    --password "$KEYSTORE_PASSWORD" \
+    --keystore-path "$SECP_KEY" \
+    --key-type secp 2>/dev/null | grep -i 'Secp public key' | awk '{print $NF}')"
 
-echo "Resetting workspace..."
-bash /opt/monad/scripts/reset-workspace.sh
+  BLS_PUB="$(monad-keystore recover \
+    --password "$KEYSTORE_PASSWORD" \
+    --keystore-path "$BLS_KEY" \
+    --key-type bls 2>/dev/null | grep -i 'BLS public key' | awk '{print $NF}')"
 
-echo "Restoring snapshot ($NETWORK)..."
-curl -sSL "$MF_BUCKET/scripts/$NETWORK/restore-from-snapshot.sh" | bash
+  [ -n "$SECP_PUB" ] || die "Could not recover SECP public key"
+  [ -n "$BLS_PUB" ]  || die "Could not recover BLS public key"
 
-echo "Downloading forkpoint..."
-curl -sSL "$MF_BUCKET/scripts/$NETWORK/download-forkpoint.sh" | bash
+  TS="$(date +%H:%M:%S)"
+  echo "[$TS] INFO  SECP Pubkey: ${SECP_PUB:0:46}..."
+  echo "[$TS] INFO  BLS  Pubkey: ${BLS_PUB:0:46}..."
+  echo
+  read -r -p "Do these match your validator keys? (y/N): " key_confirm
+  case "${key_confirm,,}" in y|yes) ;; *) die "Key mismatch. Aborting.";; esac
+  ok "Keys verified"
 
-echo "Downloading validators.toml..."
-curl -fsSL "$MF_BUCKET/validators/$NETWORK/validators.toml" -o "$VALIDATORS_FILE"
-chown monad:monad "$VALIDATORS_FILE"
+  save_state "beneficiary" "${BENEFICIARY:-}"
+  save_state "new_seq" "$NEW_SEQ"
+  save_state "secp_pub" "$SECP_PUB"
+  save_state "bls_pub" "$BLS_PUB"
+  save_state "last_step" "6"
+fi
 
-ok "Hard reset complete"
+# ── step 7: ip detect + sign name record + patch ────
+if ! $RESUME || ! completed_step 7; then
+  bar
+  echo "${BOLD}NODE ADDRESS${RESET}"
 
-# ── start services ─────────────────────────────────────
-step "START SERVICES"
-systemctl start monad-bft monad-execution monad-rpc
-ok "Services started"
+  IP="$(curl -s4 ifconfig.me || true)"
+  [ -n "$IP" ] || die "Could not detect public IP"
+  ok "Detected IP: $IP"
+
+  step "SIGN NAME RECORD"
+
+  SIGN_OUT="$(monad-sign-name-record \
+    --address "$IP:8000" \
+    --node-config "$NODE_TOML" \
+    --authenticated-udp-port 8001 \
+    --self-record-seq-num "$NEW_SEQ" \
+    --keystore-path "$SECP_KEY" \
+    --password "$KEYSTORE_PASSWORD")"
+
+  SELF_ADDRESS="$(echo "$SIGN_OUT" | grep '^self_address ' | cut -d '"' -f2)"
+  SELF_SIG="$(echo "$SIGN_OUT" | grep '^self_name_record_sig ' | cut -d '"' -f2)"
+
+  [ -n "$SELF_ADDRESS" ] || die "Failed to parse self_address from name record output"
+  [ -n "$SELF_SIG" ]     || die "Failed to parse self_name_record_sig from output"
+  ok "Name record signed"
+
+  step "PATCH node.toml"
+
+  sed -i "s|^self_address.*|self_address = \"$SELF_ADDRESS\"|" "$NODE_TOML"
+  sed -i "s|^self_record_seq_num.*|self_record_seq_num = $NEW_SEQ|" "$NODE_TOML"
+  sed -i "s|^self_name_record_sig.*|self_name_record_sig = \"$SELF_SIG\"|" "$NODE_TOML"
+  ok "node.toml updated"
+
+  save_state "ip" "$IP"
+  save_state "self_address" "$SELF_ADDRESS"
+  save_state "self_sig" "$SELF_SIG"
+  save_state "last_step" "7"
+fi
+
+# ── step 8: summary + confirm ────────────────────────
+if ! $RESUME || ! completed_step 8; then
+  bar
+  echo "${BOLD}SUMMARY${RESET}"
+  echo "  Network:     $NETWORK"
+  echo "  IP:          $SELF_ADDRESS"
+  echo "  seq_num:     $NEW_SEQ"
+  echo "  Beneficiary: ${BENEFICIARY:-not set}"
+  echo "  SECP key:    ${SECP_PUB:0:20}..."
+  echo "  BLS  key:    ${BLS_PUB:0:20}..."
+  echo
+  read -r -p "Proceed with hard reset and start? (y/N): " final_confirm
+  case "${final_confirm,,}" in y|yes) ;; *) die "Aborted.";; esac
+
+  save_state "last_step" "8"
+fi
+
+# ── step 9: stop + hard reset ────────────────────────
+if ! $RESUME || ! completed_step 9; then
+  step "STOP SERVICES"
+  systemctl stop monad-bft monad-execution monad-rpc 2>/dev/null || true
+  ok "Services stopped"
+
+  step "HARD RESET"
+
+  echo "Resetting workspace..."
+  bash /opt/monad/scripts/reset-workspace.sh
+
+  echo "Restoring snapshot ($NETWORK)..."
+  curl -sSL "$MF_BUCKET/scripts/$NETWORK/restore-from-snapshot.sh" | bash
+
+  echo "Downloading forkpoint..."
+  curl -sSL "$MF_BUCKET/scripts/$NETWORK/download-forkpoint.sh" | bash
+
+  echo "Downloading validators.toml..."
+  curl -fsSL "$MF_BUCKET/validators/$NETWORK/validators.toml" -o "$VALIDATORS_FILE"
+  chown monad:monad "$VALIDATORS_FILE"
+
+  ok "Hard reset complete"
+
+  save_state "last_step" "9"
+fi
+
+# ── step 10: start services ──────────────────────────
+if ! $RESUME || ! completed_step 10; then
+  step "START SERVICES"
+  systemctl start monad-bft monad-execution monad-rpc
+  ok "Services started"
+
+  save_state "last_step" "10"
+fi
 
 # ── done ───────────────────────────────────────────────
+clear_state
+
 echo
 bar
 ok "${BOLD}VALIDATOR PROMOTION COMPLETE${RESET}"

@@ -10,6 +10,10 @@ Follows the official [Node Migration](https://docs.monad.xyz/node-ops/node-recov
 cd /home/monad
 curl -sSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/main/monad-failover.sh
 chmod +x monad-failover.sh
+
+# verify checksum
+sha256sum monad-failover.sh
+# 6f3b796fadacc2e957a851792c52c03fa7020e84557e65a15f7c6a6eb5bcd151  monad-failover.sh
 ```
 
 ## Usage
@@ -19,6 +23,16 @@ chmod +x monad-failover.sh
 ```
 
 The script detects mainnet/testnet from `network_name` in `node.toml` and uses the correct snapshot and config URLs.
+
+### Resume
+
+If the script is interrupted (SSH drop, network issue, etc.), resume from the last completed step:
+
+```
+./monad-failover.sh --resume
+```
+
+State is saved to `~/.monad-failover/state`. Automatically cleaned up after successful promotion.
 
 ## What it does
 
@@ -67,6 +81,7 @@ Keys are never stored in the script or written to disk outside the keystore.
 - Backs up existing config (including pubkey-secp-bls) before any changes
 - Keys are entered manually and never logged
 - Confirms at every critical step before proceeding
+- Resume support: interrupted runs continue from last completed step
 
 ## After promotion
 
