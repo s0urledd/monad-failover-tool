@@ -3,7 +3,6 @@
 Single script to promote a synced Monad full node to validator.
 
 Follows the official [Node Migration](https://docs.monad.xyz/node-ops/node-recovery/node-migration) procedure.
-Turns a 15-step manual process into one guided command.
 
 ## Install
 
