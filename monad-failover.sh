@@ -131,6 +131,9 @@ for f in node.toml id-secp id-bls; do
     cp -a "$CONFIG_DIR/$f" "$BACKUP_DIR/"
   fi
 done
+if [ -f "$MONAD_HOME/pubkey-secp-bls" ]; then
+  cp -a "$MONAD_HOME/pubkey-secp-bls" "$BACKUP_DIR/"
+fi
 ok "Config backed up to $BACKUP_DIR"
 
 # ── download validator node.toml ───────────────────────
@@ -218,12 +221,7 @@ echo "${BOLD}NODE ADDRESS${RESET}"
 
 IP="$(curl -s4 ifconfig.me || true)"
 [ -n "$IP" ] || die "Could not detect public IP"
-echo "Detected IP: ${BOLD}$IP${RESET}"
-read -r -p "Use this IP? (Y/n): " ip_confirm
-case "${ip_confirm,,}" in
-  n|no) read -r -p "Enter IP: " IP; [ -n "$IP" ] || die "Empty IP";;
-esac
-ok "Using: $IP"
+ok "Detected IP: $IP"
 
 # ── sign name record ──────────────────────────────────
 step "SIGN NAME RECORD"
@@ -323,4 +321,7 @@ else
   echo "Hoodscan (testnet):"
   echo "  https://testnet.monad.hoodscan.io/validator/${SECP_PUB}?tab=Performance"
 fi
+echo
+warn "If you have downstream full nodes, they must update this validator's"
+echo "  name record in their node.toml to maintain connectivity."
 echo
