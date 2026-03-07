@@ -18,6 +18,7 @@ Turns a 15-step manual process into one guided command.
 9. Stops services, runs hard reset (snapshot restore)
 10. Downloads forkpoint + validators.toml
 11. Starts services
+12. Shows validator event monitoring commands and Hoodscan link
 
 ## About seq_num
 
@@ -160,10 +161,20 @@ Downloading validators.toml...
 ✔ VALIDATOR PROMOTION COMPLETE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Check status:
+NODE STATUS
+
+Check services:
   systemctl status monad-bft monad-execution monad-rpc --no-pager -l
   journalctl -fu monad-bft
   monad-status
+
+VALIDATOR EVENTS
+
+Watch your validator activity in logs:
+  journalctl -u monad-ledger-tail -o cat -f | grep -i "03bbf692..."
+
+Hoodscan (mainnet):
+  https://monad.hoodscan.io/validator/03bbf692...
 ```
 
 ## Safety

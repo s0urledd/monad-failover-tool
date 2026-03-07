@@ -297,11 +297,30 @@ echo
 bar
 ok "${BOLD}VALIDATOR PROMOTION COMPLETE${RESET}"
 bar
+
+# ── node status ───────────────────────────────────────
 echo
-echo "Check status:"
+echo "${BOLD}NODE STATUS${RESET}"
+echo
+echo "Check services:"
 echo "  systemctl status monad-bft monad-execution monad-rpc --no-pager -l"
 echo "  journalctl -fu monad-bft"
 if command -v monad-status >/dev/null 2>&1; then
   echo "  monad-status"
+fi
+
+# ── validator events ──────────────────────────────────
+echo
+echo "${BOLD}VALIDATOR EVENTS${RESET}"
+echo
+echo "Watch your validator activity in logs:"
+echo "  journalctl -u monad-ledger-tail -o cat -f | grep -i \"${SECP_PUB}\""
+echo
+if [[ "$NETWORK" == "mainnet" ]]; then
+  echo "Hoodscan (mainnet):"
+  echo "  https://monad.hoodscan.io/validator/${SECP_PUB}"
+else
+  echo "Hoodscan (testnet):"
+  echo "  https://testnet.monad.hoodscan.io/validator/${SECP_PUB}?tab=Performance"
 fi
 echo
