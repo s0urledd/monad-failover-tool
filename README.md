@@ -1,183 +1,177 @@
 # monad-failover
 
-Single script to promote a synced Monad full node to validator.
+A single bash script to move a Monad validator between machines with minimal downtime,
+following the official
+[Node Migration](https://docs.monad.xyz/node-ops/node-recovery/node-migration) procedure.
 
-Follows the official [Node Migration](https://docs.monad.xyz/node-ops/node-recovery/node-migration) procedure.
-Turns a 15-step manual process into one guided command.
+It handles key import, name-record signing, `node.toml` patching, the service cutover,
+and cleanup — with guards against the mistakes that are easy to make under pressure
+(wrong box, double-sign, stale config, touching the wrong services).
 
-## What it does
+## Modes
 
-1. Checks node is synced (`monad-status`)
-2. Warns if RPC 8080 is publicly exposed
-3. Backs up current config to `/opt/monad/backup/`
-4. Downloads validator `node.toml` template
-5. Asks for beneficiary address, `seq_num`, SECP IKM, BLS IKM (manual input)
-6. Imports keys, verifies public keys
-7. Signs name record with new seq_num
-8. Patches `node.toml` (self_address, self_record_seq_num, self_name_record_sig)
-9. Stops services, runs hard reset (snapshot restore)
-10. Downloads forkpoint + validators.toml
-11. Starts services
-
-## About seq_num
-
-The script asks you for the **last `self_record_seq_num`** from the failed validator's `node.toml`.
-It then uses that value + 1 for the new name record.
-
-Example: if the failed validator had `self_record_seq_num = 3`, enter `3`. The script will use `4`.
-
-This value is tied to the name record signature. Getting it wrong will prevent the node from joining consensus.
-
-## About keys
-
-You enter SECP and BLS `IKM_HEX` values manually. Input is hidden.
-
-After import, the script recovers and displays the public keys so you can verify they match your validator.
-
-Keys are never stored in the script or written to disk outside the keystore.
-
-## Requirements
-
-- Synced full node ([installation guide](https://docs.monad.xyz/node-ops/full-node-installation))
-- Monad >= 0.12.x
-- `monad-keystore`, `monad-sign-name-record` on PATH
-- `aria2c` installed (for snapshot download)
-- `/home/monad/.env` with `KEYSTORE_PASSWORD` set
-- `monad-status` recommended (not required)
+| Mode | What it does |
+|---|---|
+| `promote` | Turn an **already-synced** full node into the validator |
+| `prepare-standby` | Sync a box as a full node under **temporary** keys, ready for `promote` |
+| `restore-fullnode` | Return a box to its **own** full-node identity from backup |
 
 ## Install
 
-```
+```bash
 cd /home/monad
 curl -sSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/main/monad-failover.sh
 chmod +x monad-failover.sh
+
+sha256sum monad-failover.sh
+# c29ad43f651e09643a206f78c58d9e1b161014510783a0bf35e269705b89b402  monad-failover.sh
 ```
+
+## Quick reference
+
+| Situation | Run |
+|---|---|
+| Validator down, backup is **synced** | `promote` on the backup |
+| Validator down, backup **not synced** | `prepare-standby` → wait in-sync → `promote` |
+| **Move back** to the original box | `prepare-standby` on original → `promote` → `restore-fullnode` on temp box |
+| Return a box to plain **full node** | `restore-fullnode` on that box |
 
 ## Usage
 
+```bash
+./monad-failover.sh promote              # on the synced standby, at cutover
+./monad-failover.sh prepare-standby      # on a fresh/behind box
+./monad-failover.sh restore-fullnode     # on the old box, afterwards
+./monad-failover.sh <mode> --resume      # continue after interruption
 ```
-./monad-failover.sh
+
+**Flags:**
+
+- `--peer-host user@host` — *(promote)* SSH to verify/stop the old validator during cutover
+- `--snapshot-reset` — *(prepare-standby)* hard-reset from snapshot for a far-behind box
+- `--resume` — continue from last completed step. State: `~/.monad-failover/<mode>/state`
+
+## How a full move works
+
+```
+  prepare-standby              promote                    restore-fullnode
+  fresh box ──────▶ synced full node ──────▶ validator    old box ──────▶ full node
+  (temp keys)        (temp keys)    (cutover) (val keys)
 ```
 
-The script detects mainnet/testnet from `network_name` in `node.toml` and uses the correct snapshot and config URLs.
+1. **`prepare-standby`** on the target — syncs under temporary keys (no conflict with the live validator)
+2. Wait for `monad-status` → **`in-sync`**, `blockDifference: 0`
+3. **`promote`** — imports validator keys, signs name record (seq + 1), stops old → starts new. Downtime = seconds between stop and start
+4. **`restore-fullnode`** on the old box *(optional)* — restores its full-node identity, overwrites the validator key copy
 
-## Example output
+No snapshot or hard-reset during `promote` — the node is already synced.
 
-```
-╔══════════════════════════════════════════════╗
-║        MONAD VALIDATOR FAILOVER TOOL         ║
-╚══════════════════════════════════════════════╝
+## What each mode does
 
-▶ NODE SYNC CHECK
-✔ Node status: in-sync (block difference: 0)
+### `promote`
 
-▶ RPC SECURITY CHECK
-✔ RPC not publicly exposed
+1. Check in-sync (refuses otherwise), warn if RPC 8080 exposed, show co-located services
+2. Confirm hostname/IP — guard against running on the wrong box
+3. Back up keys + `node.toml` + `.env` to `/opt/monad/backup/`
+4. Import validator SECP + BLS from IKM (hidden), recover and display pubkeys for confirmation
+5. Set `beneficiary`, `self_record_seq_num` (prev + 1), ensure config flags
+6. Sign name record, patch `[peer_discovery]`, verify writes
+7. Confirm old validator stopped (or `--peer-host` SSH stop), mask publishing timers, cutover
+8. Verify in-sync
 
-✔ Network: mainnet
+Keeps the existing `node.toml` and patches in place — does **not** download a fresh template (avoids the placeholder crash).
 
-This will promote this full node to validator.
-Make sure the original validator services are STOPPED.
+### `prepare-standby`
 
-Continue? (y/N): y
+1. Confirm target host, back up any existing config
+2. Generate temporary SECP/BLS keys (random, not your validator keys)
+3. Download full-node `node.toml` template, set burn beneficiary, unique `node_name`
+4. Verify `.env` has `REMOTE_VALIDATORS_URL` / `REMOTE_FORKPOINT_URL`
+5. Sanitize template placeholders, sign name record (seq 1), patch
+6. `--snapshot-reset`: hard-reset + restore from snapshot. Otherwise statesync handles catch-up
+7. Start services, verify status
 
-▶ BACKUP CURRENT CONFIG
-✔ Config backed up to /opt/monad/backup/failover-20260305-141200
+### `restore-fullnode`
 
-▶ DOWNLOAD VALIDATOR node.toml
-✔ Validator node.toml downloaded
+1. Require Monad services stopped, select backup from `/opt/monad/backup/`
+2. Restore `id-secp` / `id-bls` / `node.toml` (overwrites validator keys — security cleanup)
+3. Restore original `KEYSTORE_PASSWORD` from backup
+4. Recover + confirm pubkey is the full-node identity (not validator)
+5. Sign name record (backup seq + 1), patch
+6. Start as full node, verify in-sync
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BENEFICIARY
-Enter the beneficiary address from the failed validator's node.toml
-beneficiary: 0x1234...abcd
-✔ Beneficiary set: 0x1234...abcd
+## seq_num
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SEQ NUM
-Enter last seq_num from failed validator's node.toml (example: 0)
-seq_num: 0
-✔ New seq_num: 1
+`self_record_seq_num` is per **keypair**, monotonic, and increments on every migration
+regardless of physical box. Peers reject stale or equal values.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-KEY IMPORT
-Paste IKM hex values. Input is hidden.
+- `promote`: previous validator seq + 1
+- `prepare-standby`: fresh temp key starts at 1
+- `restore-fullnode`: backup seq + 1
 
-SECP IKM_HEX:
-BLS  IKM_HEX:
-
-▶ Importing SECP key
-✔ SECP key imported
-
-▶ Importing BLS key
-✔ BLS key imported
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-VERIFY KEYS
-[14:12:05] INFO  SECP Pubkey: 03bbf692002bda53050f22289d4da8fe0bec8b81...
-[14:12:05] INFO  BLS  Pubkey: 985d3f7052ac5ad586592ba1a240b0260b5351a9...
-
-Do these match your validator keys? (y/N): y
-✔ Keys verified
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-NODE ADDRESS
-Detected IP: 65.109.145.172
-Use this IP? (Y/n): y
-✔ Using: 65.109.145.172
-
-▶ SIGN NAME RECORD
-✔ Name record signed
-
-▶ PATCH node.toml
-✔ node.toml updated
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SUMMARY
-  Network:     mainnet
-  IP:          65.109.145.172:8000
-  seq_num:     1
-  Beneficiary: 0x1234...abcd
-  SECP key:    03bbf692002bda53...
-  BLS  key:    985d3f7052ac5ad5...
-
-Proceed with hard reset and start? (y/N): y
-
-▶ STOP SERVICES
-✔ Services stopped
-
-▶ HARD RESET
-Resetting workspace...
-Restoring snapshot (mainnet)...
-Downloading forkpoint...
-Downloading validators.toml...
-✔ Hard reset complete
-
-▶ START SERVICES
-✔ Services started
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✔ VALIDATOR PROMOTION COMPLETE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Check status:
-  systemctl status monad-bft monad-execution monad-rpc --no-pager -l
-  journalctl -fu monad-bft
-  monad-status
-```
+Example round trip: `1` (original) → `2` (failover) → `3` (back). The temp key has its own counter.
 
 ## Safety
 
-- Refuses to run if the node is not in-sync
-- Warns if RPC 8080 is exposed to the internet
-- Backs up existing config before any changes
-- Keys are entered manually and never logged
-- Confirms at every critical step before proceeding
+- **In-sync gate** — `promote` refuses unless synced
+- **Double-sign guard** — `promote` blocks until old validator confirmed stopped
+- **Run-location guard** — hostname + IP + current key displayed, explicit confirmation required
+- **Co-located service protection** — only touches `monad-bft` / `monad-execution` / `monad-rpc`
+- **Backup before overwrite** — every mode backs up keys, config, keystore password, and IKM backups
+- **IKM format validation** — rejects wrong key formats before import (SECP: 64 hex no 0x, BLS: 0x + 64 hex)
+- **Key handling** — IKM entered hidden, never logged or written to state
+- **File ownership** — sets `monad:monad` and `chmod 600` on key files after every mutation
+- **Placeholder sanitization** — rewrites template dummies to valid hex before signing
+- **Write verification** — confirms `sed` actually wrote the expected values
+- **Resume** — per-step state, continues after SSH drops or network blips
+
+## Troubleshooting
+
+**`Invalid format ... "Odd number of digits"` when signing** — Fresh `node.toml` templates
+have placeholder values (`<NAME_RECORD_SIG>`, `<IP>:<PORT>`) that crash
+`monad-sign-name-record`. The tool sanitizes these before signing. Only affects
+`prepare-standby`; `promote` patches the existing valid config.
+
+**`ChecksumError` / password mismatch** — Keystores are encrypted with the creating box's
+`KEYSTORE_PASSWORD`. The tool imports from IKM (re-encrypts with local password).
+`restore-fullnode` restores the original password from backup.
+
+**`dropping proposal, randao validation failed`** — SECP/BLS key mismatch. Two common
+causes: (1) BLS IKM was imported with `--key-type` flag (known bug — corrupts the keystore),
+or (2) wrong IKM was used. Fix: re-import using the correct IKM without `--key-type`, then
+restart `monad-bft`. The tool already uses the correct import command (no `--key-type`).
+
+**`Epoch not found in validator_map`** — Outdated `validators.toml`. If close to the
+network tip, restart services (soft reset). If far behind, use `--snapshot-reset`.
+
+**`RaptorCastSecondary rejecting invite with group size exceeds max`** — Set
+`max_group_size` in `[fullnode_raptorcast]` to match the value in the error log, then
+hard-reset.
+
+**Far behind (> ~600 blocks)** — Statesync triggers automatically. Use
+`prepare-standby --snapshot-reset` only if statesync stalls or the triedb panics
+(`result_ptr.is_null()`).
+
+**`state root doesn't match, are peers trusted?`** — Version mismatch. Check
+`dpkg -l | grep monad` and update to the latest release.
+
+## After a move
+
+Downstream full nodes must update the validator's name record in their `node.toml`.
+
+## Requirements
+
+- Synced Monad full node (for `promote`)
+- `monad-keystore`, `monad-sign-name-record` on PATH
+- `/home/monad/.env` with `KEYSTORE_PASSWORD`
+- `monad-status` recommended (not required)
+- `aria2c` required only for `--snapshot-reset`
+- `openssl` required for `prepare-standby` (temp key generation)
 
 ## Reference
 
-- [Full Node Installation](https://docs.monad.xyz/node-ops/full-node-installation)
 - [Node Migration](https://docs.monad.xyz/node-ops/node-recovery/node-migration)
+- [Full Node Installation](https://docs.monad.xyz/node-ops/full-node-installation)
 - [Hard Reset](https://docs.monad.xyz/node-ops/node-recovery/hard-reset)
 
 ## License
