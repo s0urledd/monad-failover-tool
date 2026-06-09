@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 
 # ── paths ──────────────────────────────────────────────────
 MONAD_HOME="/home/monad"
@@ -97,8 +97,8 @@ check_sync() {
   if command -v monad-status >/dev/null 2>&1; then
     local out status diff
     out="$(monad-status 2>/dev/null || true)"
-    status="$(echo "$out" | grep -m1 'status:' | awk '{print $2}')"
-    diff="$(echo "$out" | grep -m1 'blockDifference:' | awk '{print $2}')"
+    status="$(echo "$out" | grep -m1 'status:' | awk '{print $2}' || true)"
+    diff="$(echo "$out" | grep -m1 'blockDifference:' | awk '{print $2}' || true)"
     if [[ "$status" == "in-sync" ]]; then
       ok "Node: in-sync (block difference: ${diff:-0})"
     else
@@ -241,7 +241,10 @@ start_monad_services() {
 mask_publishing_timers() {
   for timer in epoch-snapshot.timer forkpoint-publisher.timer; do
     if systemctl list-unit-files "$timer" &>/dev/null; then
-      systemctl mask "$timer" 2>/dev/null && ok "Masked $timer" || true
+      systemctl stop "$timer" 2>/dev/null || true
+      local svc="${timer%.timer}.service"
+      systemctl stop "$svc" 2>/dev/null || true
+      systemctl mask "$timer" 2>/dev/null && ok "Stopped & masked $timer" || true
     fi
   done
 }
@@ -266,7 +269,30 @@ set_toml_value() {
   if grep -q "^${key}\s*=" "$file" 2>/dev/null; then
     sed -i "s|^${key}.*|${key} = ${value}|" "$file"
   else
-    echo "${key} = ${value}" >> "$file"
+    local section=""
+    case "$key" in
+      enable_client|enable_publisher) section="fullnode_raptorcast" ;;
+      expand_to_group)                section="statesync" ;;
+    esac
+    if [[ -n "$section" ]]; then
+      # Insert after the [section] header line
+      local header_pattern="^\[${section}\]"
+      if grep -q "$header_pattern" "$file" 2>/dev/null; then
+        sed -i "/$header_pattern/a ${key} = ${value}" "$file"
+      else
+        warn "Section [$section] not found in $file — appending $key to EOF"
+        echo "${key} = ${value}" >> "$file"
+      fi
+    else
+      # Root-level keys (beneficiary, node_name, etc.) — insert before first [section]
+      if grep -q '^\[' "$file" 2>/dev/null; then
+        local first_section_line
+        first_section_line="$(grep -n '^\[' "$file" | head -1 | cut -d: -f1)"
+        sed -i "${first_section_line}i ${key} = ${value}" "$file"
+      else
+        echo "${key} = ${value}" >> "$file"
+      fi
+    fi
   fi
 }
 
@@ -288,8 +314,8 @@ sign_and_patch() {
 
   sign_out="$(monad-sign-name-record "${sign_args[@]}")"
 
-  SELF_ADDRESS="$(echo "$sign_out" | grep '^self_address ' | cut -d '"' -f2)"
-  SELF_SIG="$(echo "$sign_out" | grep '^self_name_record_sig ' | cut -d '"' -f2)"
+  SELF_ADDRESS="$(echo "$sign_out" | grep '^self_address ' | cut -d '"' -f2 || true)"
+  SELF_SIG="$(echo "$sign_out" | grep '^self_name_record_sig ' | cut -d '"' -f2 || true)"
 
   [[ -n "$SELF_ADDRESS" ]] || die "Failed to parse self_address from signer output"
   [[ -n "$SELF_SIG" ]]     || die "Failed to parse self_name_record_sig from signer output"
@@ -312,7 +338,7 @@ post_verify() {
   if command -v monad-status >/dev/null 2>&1; then
     local out status
     out="$(monad-status 2>/dev/null || true)"
-    status="$(echo "$out" | grep -m1 'status:' | awk '{print $2}')"
+    status="$(echo "$out" | grep -m1 'status:' | awk '{print $2}' || true)"
     if [[ "$status" == "in-sync" ]]; then
       ok "Node is in-sync"
     else
@@ -426,11 +452,11 @@ mode_promote() {
     SECP_PUB="$(monad-keystore recover \
       --password "$KEYSTORE_PASSWORD" \
       --keystore-path "$SECP_KEY" \
-      --key-type secp 2>/dev/null | grep -i 'Secp public key' | awk '{print $NF}')"
+      --key-type secp 2>/dev/null | grep -i 'Secp public key' | awk '{print $NF}' || true)"
     BLS_PUB="$(monad-keystore recover \
       --password "$KEYSTORE_PASSWORD" \
       --keystore-path "$BLS_KEY" \
-      --key-type bls 2>/dev/null | grep -i 'BLS public key' | awk '{print $NF}')"
+      --key-type bls 2>/dev/null | grep -i 'BLS public key' | awk '{print $NF}' || true)"
 
     [[ -n "$SECP_PUB" ]] || die "Could not recover SECP public key"
     [[ -n "$BLS_PUB" ]]  || die "Could not recover BLS public key"
@@ -477,8 +503,13 @@ mode_promote() {
     save_state "last_step" "5"
   fi
 
-  # ── 6. Sign name record + patch ──
+  # ── 6. Mask monad-bft + Sign name record + patch ──
   if ! $RESUME || ! completed_step 6; then
+    # Prevent monad-bft from auto-restarting with new validator keys before cutover
+    step "MASK monad-bft (prevent auto-restart during key window)"
+    systemctl mask monad-bft 2>/dev/null || true
+    ok "monad-bft masked — will unmask at cutover"
+
     detect_ip
     sign_and_patch "$NODE_TOML" "$IP" "$NEW_SEQ" "$SECP_KEY" "$KEYSTORE_PASSWORD"
 
@@ -533,6 +564,9 @@ mode_promote() {
 
     step "CUTOVER"
     stop_monad_services
+    # Unmask monad-bft before starting
+    systemctl unmask monad-bft 2>/dev/null || true
+    systemctl enable "${MONAD_SERVICES[@]}" 2>/dev/null || true
     start_monad_services
 
     save_state "last_step" "7"
@@ -600,9 +634,20 @@ mode_prepare_standby() {
     fi
   fi
 
-  # ── 1. Location guard + backup ──
+  # ── 1. Location guard + active validator check + backup ──
   if ! $RESUME || ! completed_step 1; then
     run_location_guard "prepare this box as a standby full node"
+
+    if [[ -f "$SECP_KEY" ]] && [[ -n "${KEYSTORE_PASSWORD:-}" ]] && [[ -f "$VALIDATORS_TOML" ]]; then
+      local cur_pub
+      cur_pub="$(monad-keystore recover --password "$KEYSTORE_PASSWORD" \
+        --keystore-path "$SECP_KEY" --key-type secp 2>/dev/null \
+        | grep -i 'Secp public key' | awk '{print $NF}' || true)"
+      if [[ -n "$cur_pub" ]] && grep -q "$cur_pub" "$VALIDATORS_TOML" 2>/dev/null; then
+        die "This box holds an ACTIVE VALIDATOR key (${cur_pub:0:24}...) listed in validators.toml. Running prepare-standby here would overwrite it with temp keys. Aborting."
+      fi
+    fi
+
     check_colocated_services
 
     if [[ -f "$NODE_TOML" ]] || [[ -f "$SECP_KEY" ]] || [[ -f "$BLS_KEY" ]]; then
@@ -645,11 +690,11 @@ mode_prepare_standby() {
     SECP_PUB="$(monad-keystore recover \
       --password "$KEYSTORE_PASSWORD" \
       --keystore-path "$SECP_KEY" \
-      --key-type secp 2>/dev/null | grep -i 'Secp public key' | awk '{print $NF}')"
+      --key-type secp 2>/dev/null | grep -i 'Secp public key' | awk '{print $NF}' || true)"
     BLS_PUB="$(monad-keystore recover \
       --password "$KEYSTORE_PASSWORD" \
       --keystore-path "$BLS_KEY" \
-      --key-type bls 2>/dev/null | grep -i 'BLS public key' | awk '{print $NF}')"
+      --key-type bls 2>/dev/null | grep -i 'BLS public key' | awk '{print $NF}' || true)"
 
     [[ -n "$SECP_PUB" ]] || die "Could not recover temp SECP key"
     [[ -n "$BLS_PUB" ]]  || die "Could not recover temp BLS key"
@@ -902,11 +947,11 @@ mode_restore_fullnode() {
     SECP_PUB="$(monad-keystore recover \
       --password "$KEYSTORE_PASSWORD" \
       --keystore-path "$SECP_KEY" \
-      --key-type secp 2>/dev/null | grep -i 'Secp public key' | awk '{print $NF}')"
+      --key-type secp 2>/dev/null | grep -i 'Secp public key' | awk '{print $NF}' || true)"
     BLS_PUB="$(monad-keystore recover \
       --password "$KEYSTORE_PASSWORD" \
       --keystore-path "$BLS_KEY" \
-      --key-type bls 2>/dev/null | grep -i 'BLS public key' | awk '{print $NF}')"
+      --key-type bls 2>/dev/null | grep -i 'BLS public key' | awk '{print $NF}' || true)"
 
     [[ -n "$SECP_PUB" ]] || die "Could not recover SECP key — password mismatch?"
     [[ -n "$BLS_PUB" ]]  || die "Could not recover BLS key — password mismatch?"
@@ -928,12 +973,17 @@ mode_restore_fullnode() {
 
   # ── 5. Sign name record + patch ──
   if ! $RESUME || ! completed_step 5; then
-    local cur_seq
+    local cur_seq backup_seq eff_seq
     cur_seq="$(grep '^self_record_seq_num' "$NODE_TOML" 2>/dev/null \
       | awk '{print $NF}' | tr -d '"' || true)"
     cur_seq="${cur_seq:-0}"
-    local new_seq=$((cur_seq + 1))
-    ok "Name record seq: $cur_seq -> $new_seq"
+    backup_seq="$(grep '^self_record_seq_num' "$BACKUP_DIR/node.toml" 2>/dev/null \
+      | awk '{print $NF}' | tr -d '"' || true)"
+    backup_seq="${backup_seq:-0}"
+    # Use whichever is higher — identity may have migrated after backup was taken
+    eff_seq=$(( cur_seq > backup_seq ? cur_seq : backup_seq ))
+    local new_seq=$((eff_seq + 1))
+    ok "Name record seq: max(current=$cur_seq, backup=$backup_seq) + 1 = $new_seq"
 
     detect_ip
     sign_and_patch "$NODE_TOML" "$IP" "$new_seq" "$SECP_KEY" "$KEYSTORE_PASSWORD" "false"
