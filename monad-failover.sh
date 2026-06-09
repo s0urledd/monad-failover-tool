@@ -265,35 +265,21 @@ verify_config_flags() {
 }
 
 set_toml_value() {
-  local file="$1" key="$2" value="$3"
-  if grep -q "^${key}\s*=" "$file" 2>/dev/null; then
-    sed -i "s|^${key}.*|${key} = ${value}|" "$file"
-  else
-    local section=""
-    case "$key" in
-      enable_client|enable_publisher) section="fullnode_raptorcast" ;;
-      expand_to_group)                section="statesync" ;;
-    esac
-    if [[ -n "$section" ]]; then
-      # Insert after the [section] header line
-      local header_pattern="^\[${section}\]"
-      if grep -q "$header_pattern" "$file" 2>/dev/null; then
-        sed -i "/$header_pattern/a ${key} = ${value}" "$file"
-      else
-        warn "Section [$section] not found in $file — appending $key to EOF"
-        echo "${key} = ${value}" >> "$file"
-      fi
-    else
-      # Root-level keys (beneficiary, node_name, etc.) — insert before first [section]
-      if grep -q '^\[' "$file" 2>/dev/null; then
-        local first_section_line
-        first_section_line="$(grep -n '^\[' "$file" | head -1 | cut -d: -f1)"
-        sed -i "${first_section_line}i ${key} = ${value}" "$file"
-      else
-        echo "${key} = ${value}" >> "$file"
-      fi
-    fi
+  local file="$1" key="$2" value="$3" section="${4:-}"
+
+  if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null; then
+    sed -i "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = ${value}|" "$file"
+    return
   fi
+
+  if [[ -z "$section" ]]; then
+    die "Key '$key' not found in $file and no section given — refusing to append blindly."
+  fi
+  grep -qF "[$section]" "$file" \
+    || die "Section [$section] not found in $file — cannot place '$key'."
+  sed -i "\\|^\\[$section\\]|a ${key} = ${value}" "$file"
+  grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file" \
+    || die "Failed to insert '$key' under [$section]."
 }
 
 sign_and_patch() {
@@ -312,7 +298,9 @@ sign_and_patch() {
   )
   [[ "$use_node_config" == "true" ]] && sign_args+=(--node-config "$toml")
 
-  sign_out="$(monad-sign-name-record "${sign_args[@]}")"
+  if ! sign_out="$(monad-sign-name-record "${sign_args[@]}")"; then
+    die "monad-sign-name-record failed"
+  fi
 
   SELF_ADDRESS="$(echo "$sign_out" | grep '^self_address ' | cut -d '"' -f2 || true)"
   SELF_SIG="$(echo "$sign_out" | grep '^self_name_record_sig ' | cut -d '"' -f2 || true)"
@@ -493,9 +481,9 @@ mode_promote() {
     NEW_SEQ=$((LAST_SEQ + 1))
     ok "New seq_num: $NEW_SEQ"
 
-    set_toml_value "$NODE_TOML" "enable_publisher" "true"
-    set_toml_value "$NODE_TOML" "enable_client" "true"
-    set_toml_value "$NODE_TOML" "expand_to_group" "true"
+    set_toml_value "$NODE_TOML" "enable_publisher" "true"  "fullnode_raptorcast"
+    set_toml_value "$NODE_TOML" "enable_client"    "true"  "fullnode_raptorcast"
+    set_toml_value "$NODE_TOML" "expand_to_group"  "true"  "statesync"
     verify_config_flags
 
     save_state "beneficiary" "${BENEFICIARY:-}"
@@ -729,8 +717,8 @@ mode_prepare_standby() {
     set_toml_value "$NODE_TOML" "node_name" "\"$node_name\""
     ok "node_name: $node_name"
 
-    set_toml_value "$NODE_TOML" "enable_client" "true"
-    set_toml_value "$NODE_TOML" "expand_to_group" "true"
+    set_toml_value "$NODE_TOML" "enable_client"    "true"  "fullnode_raptorcast"
+    set_toml_value "$NODE_TOML" "expand_to_group"  "true"  "statesync"
 
     save_state "last_step" "3"
   fi
