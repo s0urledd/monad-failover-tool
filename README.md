@@ -57,7 +57,7 @@ fresh box ──────▶ synced full node ──────▶ validator
 - **Run-location guard** — hostname, IP, current key displayed before confirmation
 - **Active validator guard** — `prepare-standby` refuses if current key is in `validators.toml`
 - **Backup before overwrite** — keys, config, keystore password backed up to `/opt/monad/backup/`
-- **IKM validation** — rejects wrong key formats before import (SECP: 64 hex, BLS: 0x + 64 hex)
+- **IKM validation** — strips optional 0x prefix, rejects non-64-hex input before import
 - **Key handling** — IKM entered hidden, never logged or written to state
 - **Co-located service protection** — only touches `monad-bft` / `monad-execution` / `monad-rpc`
 - **Resume** — per-step state file, continues after SSH drops or interruptions
