@@ -346,6 +346,7 @@ detect_ip() {
 # ══════════════════════════════════════════════════════════
 mode_promote() {
   header "promote"
+  trap 'systemctl unmask monad-bft 2>/dev/null || true' EXIT
 
   need_cmd curl; need_cmd systemctl; need_cmd sed
   need_cmd monad-keystore; need_cmd monad-sign-name-record
@@ -551,9 +552,8 @@ mode_promote() {
     fi
 
     step "CUTOVER"
-    stop_monad_services
-    # Unmask monad-bft before starting
     systemctl unmask monad-bft 2>/dev/null || true
+    stop_monad_services
     systemctl enable "${MONAD_SERVICES[@]}" 2>/dev/null || true
     start_monad_services
 
@@ -567,6 +567,7 @@ mode_promote() {
   fi
 
   # ── done ──
+  trap - EXIT
   clear_state
   echo
   bar
