@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-VERSION="2.3.0"
+VERSION="3.0.0"
 
 # ── paths ──────────────────────────────────────────────────
 MONAD_HOME="/home/monad"
@@ -23,6 +23,8 @@ NODE_TOML="$CONFIG_DIR/node.toml"
 ENV_FILE="$MONAD_HOME/.env"
 SECP_KEY="$CONFIG_DIR/id-secp"
 BLS_KEY="$CONFIG_DIR/id-bls"
+SECP_KEY_NEW="$CONFIG_DIR/id-secp.new"
+BLS_KEY_NEW="$CONFIG_DIR/id-bls.new"
 MF_BUCKET="https://bucket.monadinfra.com"
 BACKUP_ROOT="/opt/monad/backup"
 VALIDATORS_DIR="$CONFIG_DIR/validators"
@@ -238,21 +240,6 @@ start_monad_services() {
   ok "Services started"
 }
 
-mask_publishing_timers() {
-  for timer in epoch-snapshot.timer forkpoint-publisher.timer; do
-    if systemctl list-unit-files "$timer" &>/dev/null; then
-      systemctl stop "$timer" 2>/dev/null || true
-      local svc="${timer%.timer}.service"
-      systemctl stop "$svc" 2>/dev/null || true
-      systemctl mask "$timer" 2>/dev/null && ok "Stopped & masked $timer" || true
-    fi
-  done
-}
-
-MASKED=false
-mask_bft()   { systemctl mask monad-bft 2>/dev/null || true; MASKED=true; }
-unmask_bft() { systemctl unmask monad-bft 2>/dev/null || true; MASKED=false; }
-
 verify_config_flags() {
   step "VERIFY CONFIG FLAGS"
   local missing=""
@@ -348,19 +335,9 @@ detect_ip() {
 # ══════════════════════════════════════════════════════════
 # MODE: promote
 # ══════════════════════════════════════════════════════════
-promote_cleanup() {
-  if $MASKED; then
-    warn "monad-bft left MASKED on purpose (validator keys may be on disk;"
-    echo "  old validator may still be live — auto-restart is blocked to"
-    echo "  prevent double-sign)."
-    echo "  Resume:        ./monad-failover.sh promote --resume"
-    echo "  Full rollback: ./monad-failover.sh restore-fullnode"
-  fi
-}
-
 mode_promote() {
   header "promote"
-  trap promote_cleanup EXIT
+  trap 'rm -f "$SECP_KEY_NEW" "$BLS_KEY_NEW" 2>/dev/null || true' EXIT
 
   need_cmd curl; need_cmd systemctl; need_cmd sed
   need_cmd monad-keystore; need_cmd monad-sign-name-record
@@ -387,9 +364,6 @@ mode_promote() {
       SELF_SIG="$(load_state "self_sig")"
       BENEFICIARY="$(load_state "beneficiary")"
       BACKUP_DIR="$(load_state "backup_dir")"
-      if [[ "$last" -ge 4 ]] && [[ "$last" -lt 7 ]]; then
-        mask_bft
-      fi
     fi
   fi
 
@@ -416,14 +390,15 @@ mode_promote() {
     save_state "last_step" "3"
   fi
 
-  # ── 4. Import validator keys ──
+  # ── 4. Import validator keys (to staging paths — live keys untouched) ──
   if ! $RESUME || ! completed_step 4; then
-    mask_bft
-    ok "monad-bft masked — blocked until cutover"
+    rm -f "$SECP_KEY_NEW" "$BLS_KEY_NEW"
 
     bar
     echo "${BOLD}KEY IMPORT${RESET}"
     echo "Paste the validator IKM hex values. Input is hidden."
+    echo "  Keys are imported to staging files (id-secp.new / id-bls.new)."
+    echo "  Live keys remain untouched until cutover."
     echo
 
     read -r -s -p "SECP IKM_HEX: " SECP_IKM; echo
@@ -438,21 +413,22 @@ mode_promote() {
     [[ "${BLS_IKM#0x}" =~ ^[0-9a-fA-F]{64}$ ]] \
       || die "BLS IKM must be 0x + 64 hex chars"
 
-    step "Importing SECP key"
+    step "Importing SECP key (staging)"
     monad-keystore import \
       --ikm "$SECP_IKM" \
-      --keystore-path "$SECP_KEY" \
+      --keystore-path "$SECP_KEY_NEW" \
       --password "$KEYSTORE_PASSWORD"
-    ok "SECP key imported"
+    ok "SECP key imported to id-secp.new"
 
-    step "Importing BLS key"
+    step "Importing BLS key (staging)"
     monad-keystore import \
       --ikm "$BLS_IKM" \
-      --keystore-path "$BLS_KEY" \
+      --keystore-path "$BLS_KEY_NEW" \
       --password "$KEYSTORE_PASSWORD"
-    ok "BLS key imported"
+    ok "BLS key imported to id-bls.new"
 
-    fix_ownership
+    chown monad:monad "$SECP_KEY_NEW" "$BLS_KEY_NEW" 2>/dev/null || true
+    chmod 600 "$SECP_KEY_NEW" "$BLS_KEY_NEW" 2>/dev/null || true
     SECP_IKM="" BLS_IKM=""
 
     bar
@@ -460,11 +436,11 @@ mode_promote() {
 
     SECP_PUB="$(monad-keystore recover \
       --password "$KEYSTORE_PASSWORD" \
-      --keystore-path "$SECP_KEY" \
+      --keystore-path "$SECP_KEY_NEW" \
       --key-type secp 2>/dev/null | grep -i 'Secp public key' | awk '{print $NF}' || true)"
     BLS_PUB="$(monad-keystore recover \
       --password "$KEYSTORE_PASSWORD" \
-      --keystore-path "$BLS_KEY" \
+      --keystore-path "$BLS_KEY_NEW" \
       --key-type bls 2>/dev/null | grep -i 'BLS public key' | awk '{print $NF}' || true)"
 
     [[ -n "$SECP_PUB" ]] || die "Could not recover SECP public key"
@@ -512,10 +488,10 @@ mode_promote() {
     save_state "last_step" "5"
   fi
 
-  # ── 6. Sign name record + patch ──
+  # ── 6. Sign name record + patch (using staging key) ──
   if ! $RESUME || ! completed_step 6; then
     detect_ip
-    sign_and_patch "$NODE_TOML" "$IP" "$NEW_SEQ" "$SECP_KEY" "$KEYSTORE_PASSWORD"
+    sign_and_patch "$NODE_TOML" "$IP" "$NEW_SEQ" "$SECP_KEY_NEW" "$KEYSTORE_PASSWORD"
 
     save_state "ip" "$IP"
     save_state "self_address" "$SELF_ADDRESS"
@@ -523,7 +499,7 @@ mode_promote() {
     save_state "last_step" "6"
   fi
 
-  # ── 7. Summary + cutover ──
+  # ── 7. Confirm old validator stopped + cutover ──
   if ! $RESUME || ! completed_step 7; then
     bar
     echo "${BOLD}PROMOTION SUMMARY${RESET}"
@@ -537,9 +513,6 @@ mode_promote() {
     echo "  BLS  key:    ${BLS_PUB:0:24}..."
     echo
 
-    # Mask publishing timers before cutover
-    mask_publishing_timers
-
     if [[ -n "$PEER_HOST" ]]; then
       step "CHECK PEER HOST: $PEER_HOST"
       local peer_active=false
@@ -550,11 +523,9 @@ mode_promote() {
         fi
       done
       if $peer_active; then
-        warn "Monad services still running on $PEER_HOST"
-        confirm_yn "Stop them now via SSH?" \
-          || die "Cannot proceed while old validator is running."
-        ssh "$PEER_HOST" "systemctl stop ${MONAD_SERVICES[*]}" 2>/dev/null
-        sleep 2; ok "Peer services stopped"
+        die "Monad services still running on $PEER_HOST. Stop them first:" \
+          "  ssh $PEER_HOST 'systemctl stop ${MONAD_SERVICES[*]}'" \
+          "then re-run with --resume."
       else
         ok "Peer services already stopped"
       fi
@@ -566,9 +537,18 @@ mode_promote() {
       confirm_yn "Original validator stopped and verified?" || die "Aborted."
     fi
 
+    bar
+    warn "${BOLD}POINT OF NO RETURN${RESET}"
+    echo "  The next step stops services, swaps in the validator keys, and starts."
+    echo "  After this the old validator MUST NOT be restarted with the same keys."
+    echo
+    confirm_yn "Proceed with cutover?" || die "Aborted."
+
     step "CUTOVER"
-    unmask_bft
     stop_monad_services
+    mv "$SECP_KEY_NEW" "$SECP_KEY"
+    mv "$BLS_KEY_NEW" "$BLS_KEY"
+    fix_ownership
     systemctl enable "${MONAD_SERVICES[@]}" 2>/dev/null || true
     start_monad_services
 
@@ -1001,7 +981,6 @@ mode_restore_fullnode() {
 
   # ── 6. Start as full node ──
   if ! $RESUME || ! completed_step 6; then
-    systemctl unmask monad-bft 2>/dev/null || true
     start_monad_services
     save_state "last_step" "6"
   fi
@@ -1045,7 +1024,7 @@ usage() {
   echo "  restore-fullnode Restore a box to its original full-node identity"
   echo
   echo "Flags:"
-  echo "  --peer-host      SSH target to verify/stop the old validator (promote only)"
+  echo "  --peer-host      SSH target to verify the old validator is stopped (promote only)"
   echo "  --snapshot-reset Hard reset from snapshot (prepare-standby only)"
   echo "  --resume         Continue from last completed step"
   exit 0
