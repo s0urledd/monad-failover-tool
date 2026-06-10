@@ -404,13 +404,13 @@ mode_promote() {
     [[ -n "$SECP_IKM" ]] || die "Empty SECP IKM"
     SECP_IKM="${SECP_IKM#0x}"
     [[ "$SECP_IKM" =~ ^[0-9a-fA-F]{64}$ ]] \
-      || die "SECP IKM must be 64 hex chars (no 0x prefix)"
+      || die "SECP IKM must be 64 hex characters"
 
     read -r -s -p "BLS  IKM_HEX: " BLS_IKM; echo
     [[ -n "$BLS_IKM" ]] || die "Empty BLS IKM"
-    [[ "$BLS_IKM" =~ ^0x ]] || die "BLS IKM must start with 0x"
-    [[ "${BLS_IKM#0x}" =~ ^[0-9a-fA-F]{64}$ ]] \
-      || die "BLS IKM must be 0x + 64 hex chars"
+    BLS_IKM="${BLS_IKM#0x}"
+    [[ "$BLS_IKM" =~ ^[0-9a-fA-F]{64}$ ]] \
+      || die "BLS IKM must be 64 hex characters"
 
     step "Importing SECP key (staging)"
     monad-keystore import \
