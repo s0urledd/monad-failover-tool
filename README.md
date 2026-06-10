@@ -24,7 +24,7 @@ curl -sSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/main/m
 chmod +x monad-failover.sh
 
 sha256sum monad-failover.sh
-# 37eee4845aca859a61282fd2d699bbd6e325fba0e9ec477baade30924cf9ccce  monad-failover.sh
+# 41014d263497bd2b1d07fc6836edadeaf7c6356d6eb42f3a4b24721520777eb2  monad-failover.sh
 ```
 
 ## Quick reference
@@ -162,6 +162,7 @@ Downstream full nodes must update the validator's name record in their `node.tom
 ## Requirements
 
 - Synced Monad full node (for `promote`)
+- Monad >= 0.14.4 (mainnet) / >= 0.14.5 (testnet)
 - `monad-keystore`, `monad-sign-name-record` on PATH
 - `/home/monad/.env` with `KEYSTORE_PASSWORD`
 - `monad-status` recommended (not required)

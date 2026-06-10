@@ -14,7 +14,7 @@
 
 set -euo pipefail
 
-VERSION="2.2.0"
+VERSION="2.3.0"
 
 # ── paths ──────────────────────────────────────────────────
 MONAD_HOME="/home/monad"
@@ -249,6 +249,10 @@ mask_publishing_timers() {
   done
 }
 
+MASKED=false
+mask_bft()   { systemctl mask monad-bft 2>/dev/null || true; MASKED=true; }
+unmask_bft() { systemctl unmask monad-bft 2>/dev/null || true; MASKED=false; }
+
 verify_config_flags() {
   step "VERIFY CONFIG FLAGS"
   local missing=""
@@ -344,9 +348,19 @@ detect_ip() {
 # ══════════════════════════════════════════════════════════
 # MODE: promote
 # ══════════════════════════════════════════════════════════
+promote_cleanup() {
+  if $MASKED; then
+    warn "monad-bft left MASKED on purpose (validator keys may be on disk;"
+    echo "  old validator may still be live — auto-restart is blocked to"
+    echo "  prevent double-sign)."
+    echo "  Resume:        ./monad-failover.sh promote --resume"
+    echo "  Full rollback: ./monad-failover.sh restore-fullnode"
+  fi
+}
+
 mode_promote() {
   header "promote"
-  trap 'systemctl unmask monad-bft 2>/dev/null || true' EXIT
+  trap promote_cleanup EXIT
 
   need_cmd curl; need_cmd systemctl; need_cmd sed
   need_cmd monad-keystore; need_cmd monad-sign-name-record
@@ -373,6 +387,9 @@ mode_promote() {
       SELF_SIG="$(load_state "self_sig")"
       BENEFICIARY="$(load_state "beneficiary")"
       BACKUP_DIR="$(load_state "backup_dir")"
+      if [[ "$last" -ge 4 ]] && [[ "$last" -lt 7 ]]; then
+        mask_bft
+      fi
     fi
   fi
 
@@ -401,6 +418,9 @@ mode_promote() {
 
   # ── 4. Import validator keys ──
   if ! $RESUME || ! completed_step 4; then
+    mask_bft
+    ok "monad-bft masked — blocked until cutover"
+
     bar
     echo "${BOLD}KEY IMPORT${RESET}"
     echo "Paste the validator IKM hex values. Input is hidden."
@@ -492,13 +512,8 @@ mode_promote() {
     save_state "last_step" "5"
   fi
 
-  # ── 6. Mask monad-bft + Sign name record + patch ──
+  # ── 6. Sign name record + patch ──
   if ! $RESUME || ! completed_step 6; then
-    # Prevent monad-bft from auto-restarting with new validator keys before cutover
-    step "MASK monad-bft (prevent auto-restart during key window)"
-    systemctl mask monad-bft 2>/dev/null || true
-    ok "monad-bft masked — will unmask at cutover"
-
     detect_ip
     sign_and_patch "$NODE_TOML" "$IP" "$NEW_SEQ" "$SECP_KEY" "$KEYSTORE_PASSWORD"
 
@@ -552,7 +567,7 @@ mode_promote() {
     fi
 
     step "CUTOVER"
-    systemctl unmask monad-bft 2>/dev/null || true
+    unmask_bft
     stop_monad_services
     systemctl enable "${MONAD_SERVICES[@]}" 2>/dev/null || true
     start_monad_services
@@ -701,7 +716,9 @@ mode_prepare_standby() {
     step "DOWNLOAD FULL-NODE node.toml"
 
     if [[ -z "${NETWORK:-}" ]]; then
-      detect_network "$NODE_TOML" 2>/dev/null || true
+      if [[ -f "$NODE_TOML" ]]; then
+        detect_network "$NODE_TOML" 2>/dev/null || true
+      fi
       if [[ -z "${NETWORK:-}" ]]; then
         read -r -p "  Network (mainnet/testnet): " NETWORK
         [[ "$NETWORK" == "mainnet" || "$NETWORK" == "testnet" ]] || die "Invalid network"
@@ -910,9 +927,12 @@ mode_restore_fullnode() {
       # shellcheck disable=SC1090
       source "$ENV_FILE"
       if [[ "${KEYSTORE_PASSWORD:-}" != "$backup_pw" ]]; then
-        # Use awk to safely replace password (handles special chars in base64)
-        awk -v pw="$backup_pw" '/^KEYSTORE_PASSWORD=/{print "KEYSTORE_PASSWORD='"'"'" pw "'"'"'"; next} {print}' \
-          "$ENV_FILE" > "${ENV_FILE}.tmp" && mv "${ENV_FILE}.tmp" "$ENV_FILE"
+        if grep -q '^KEYSTORE_PASSWORD=' "$ENV_FILE" 2>/dev/null; then
+          awk -v pw="$backup_pw" '/^KEYSTORE_PASSWORD=/{print "KEYSTORE_PASSWORD='"'"'" pw "'"'"'"; next} {print}' \
+            "$ENV_FILE" > "${ENV_FILE}.tmp" && mv "${ENV_FILE}.tmp" "$ENV_FILE"
+        else
+          printf "KEYSTORE_PASSWORD='%s'\n" "$backup_pw" >> "$ENV_FILE"
+        fi
         chmod 600 "$ENV_FILE"
         KEYSTORE_PASSWORD="$backup_pw"
         ok "KEYSTORE_PASSWORD restored from backup"
@@ -981,6 +1001,7 @@ mode_restore_fullnode() {
 
   # ── 6. Start as full node ──
   if ! $RESUME || ! completed_step 6; then
+    systemctl unmask monad-bft 2>/dev/null || true
     start_monad_services
     save_state "last_step" "6"
   fi
