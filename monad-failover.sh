@@ -337,7 +337,6 @@ detect_ip() {
 # ══════════════════════════════════════════════════════════
 mode_promote() {
   header "promote"
-  trap 'rm -f "$SECP_KEY_NEW" "$BLS_KEY_NEW" 2>/dev/null || true' EXIT
 
   need_cmd curl; need_cmd systemctl; need_cmd sed
   need_cmd monad-keystore; need_cmd monad-sign-name-record
@@ -562,7 +561,7 @@ mode_promote() {
   fi
 
   # ── done ──
-  trap - EXIT
+  rm -f "$SECP_KEY_NEW" "$BLS_KEY_NEW" 2>/dev/null || true
   clear_state
   echo
   bar
@@ -595,6 +594,7 @@ mode_promote() {
 # ══════════════════════════════════════════════════════════
 mode_prepare_standby() {
   header "prepare-standby"
+  rm -f "$SECP_KEY_NEW" "$BLS_KEY_NEW" 2>/dev/null || true
 
   need_cmd curl; need_cmd systemctl; need_cmd sed; need_cmd openssl
   need_cmd monad-keystore; need_cmd monad-sign-name-record
@@ -808,6 +808,7 @@ mode_prepare_standby() {
 # ══════════════════════════════════════════════════════════
 mode_restore_fullnode() {
   header "restore-fullnode"
+  rm -f "$SECP_KEY_NEW" "$BLS_KEY_NEW" 2>/dev/null || true
 
   need_cmd curl; need_cmd systemctl; need_cmd sed
   need_cmd monad-keystore; need_cmd monad-sign-name-record
