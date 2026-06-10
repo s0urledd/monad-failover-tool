@@ -6,10 +6,10 @@ Move a Monad validator between machines with minimal downtime, following the off
 | Mode | Purpose |
 |---|---|
 | `promote` | Turn a synced full node into the validator |
-| `prepare-standby` | Sync a box as a full node under temporary keys |
-| `restore-fullnode` | Return a box to its own full-node identity |
+| `prepare-standby` | Sync a server as a full node under temporary keys |
+| `restore-fullnode` | Return a server to its own full-node identity |
 
-`prepare-standby` → `promote` is a full move; `restore-fullnode` cleans up the old box.
+`prepare-standby` → `promote` is a full move; `restore-fullnode` returns the old server to a full node.
 
 ## Install
 
@@ -24,10 +24,10 @@ sha256sum monad-failover.sh   # 54a33f89a2ca202424a158126823009318a00c3b726603f8
 ## Usage
 
 ```bash
-./monad-failover.sh promote           # synced standby → validator
-./monad-failover.sh prepare-standby   # fresh box → synced full node
-./monad-failover.sh restore-fullnode  # old box → original full-node identity
-./monad-failover.sh <mode> --resume   # continue after interruption
+./monad-failover.sh promote           # promote a synced full node to validator
+./monad-failover.sh prepare-standby   # sync a standby server as a full node (temp keys)
+./monad-failover.sh restore-fullnode  # return a former-validator server to full-node identity
+./monad-failover.sh <mode> --resume   # continue after an interruption
 ```
 
 | Flag | Mode | Effect |
@@ -39,15 +39,14 @@ sha256sum monad-failover.sh   # 54a33f89a2ca202424a158126823009318a00c3b726603f8
 ## How a move works
 
 ```
-prepare-standby              promote                    restore-fullnode
-fresh box ──────▶ synced full node ──────▶ validator    old box ──────▶ full node
-(temp keys)        (temp keys)    (cutover) (val keys)
+Target server:  new  ──prepare-standby──▶  synced full node  ──promote (cutover)──▶  validator
+Old server:      validator  ──restore-fullnode──▶  full node
 ```
 
-1. `prepare-standby` syncs the target under temporary keys.
+1. `prepare-standby` syncs the target server under temporary keys.
 2. Wait for `monad-status` → `in-sync`.
 3. `promote` stages the validator keys, confirms the old validator is stopped, then swaps keys in at cutover.
-4. `restore-fullnode` (optional) returns the old box to its full-node identity.
+4. `restore-fullnode` (optional) returns the old server to its full-node identity.
 
 ## Safety
 
