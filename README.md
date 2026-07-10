@@ -18,7 +18,7 @@ curl -sSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/main/m
 chmod +x monad-failover.sh
 
 sha256sum monad-failover.sh
-# 69855a3b4eccff0d933dbd9cc98d1d29ab61f6784dcf549914ae207c3c6846cf
+# 40720f475960aa3299dd294db8126bf0a08d98e0a05d07438ae0310e5b47f0e1
 ```
 
 ## Usage
@@ -62,7 +62,8 @@ Fair question. The mitigations, in the order they matter:
 - **Dry-run first** — `--dry-run` exercises every check without touching a file,
   key or service.
 - **Checksum-pinned** — the README hash must match the script; CI fails otherwise.
-- **ShellCheck-clean, CI-tested** on every commit.
+- **Tested end-to-end** — CI runs the full promotion flow against mocked Monad
+  binaries (bats) plus ShellCheck on every commit.
 - **Nothing leaves the machine** — no telemetry; the only outbound calls are
   public-IP detection (`ifconfig.me`) and the optional `--peer-host` SSH check.
   Secrets are never logged or echoed. Details in [SECURITY.md](SECURITY.md).

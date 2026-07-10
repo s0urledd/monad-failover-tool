@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Mock monad-sign-name-record: echoes the three patched lines in the real
+# tool's output shape, deriving values from the arguments it was given.
+set -euo pipefail
+
+ADDRESS="" SEQ=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --address)             shift; ADDRESS="$1" ;;
+    --self-record-seq-num) shift; SEQ="$1" ;;
+    --keystore-path)       shift ;;
+    --password)            shift ;;
+    --node-config)         shift ;;
+    --authenticated-udp-port) shift ;;
+  esac
+  shift
+done
+
+[[ -n "$ADDRESS" && -n "$SEQ" ]] || { echo "missing args" >&2; exit 1; }
+sig="$(printf 'ab%.0s' $(seq 1 65))"
+echo "self_address = \"$ADDRESS\""
+echo "self_record_seq_num = $SEQ"
+echo "self_name_record_sig = \"$sig\""
