@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check
+        run: bash -n monad-failover.sh
+
+      - name: ShellCheck (style level)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck -S style monad-failover.sh
+
+      - name: README checksum matches script
+        run: |
+          want="$(grep -oE '\b[0-9a-f]{64}\b' README.md | head -1)"
+          got="$(sha256sum monad-failover.sh | awk '{print $1}')"
+          echo "README: $want"
+          echo "script: $got"
+          test "$want" = "$got"
+
+      - name: Flags smoke test
+        run: |
+          bash monad-failover.sh --version
+          bash monad-failover.sh --help
+          bash monad-failover.sh --dry-run && exit 1 || test $? -eq 1

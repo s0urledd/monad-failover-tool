@@ -1,11 +1,14 @@
 # monad-failover
 
+[![ci](https://github.com/s0urledd/monad-failover-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/s0urledd/monad-failover-tool/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Promotes a synced Monad full node to a validator, following the official
 [node migration](https://docs.monad.xyz/node-ops/node-recovery/node-migration) procedure.
-
-This script exists for the day your validator machine dies. If you keep a synced full
-node running and have your key backups stored off-server, you can move the validator
-identity over and be signing again in minutes, without needing the old server at all.
+Built for the case where the old validator server is gone: all it needs is a synced full
+node and your `secp-backup` / `bls-backup` key files (created during the official
+[full node installation](https://docs.monad.xyz/node-ops/full-node-installation#generate-keystores) —
+keep copies off-server).
 
 ## Install
 
@@ -15,95 +18,65 @@ curl -sSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/main/m
 chmod +x monad-failover.sh
 
 sha256sum monad-failover.sh
-# 01b5df25d716f312733ad34ee16d89942b317e8aaae9912d8abdb835f12074dc
+# 69855a3b4eccff0d933dbd9cc98d1d29ab61f6784dcf549914ae207c3c6846cf
 ```
 
-## Running a failover
+## Usage
 
-You need a full node synced to the tip (`monad-status` reports `in-sync`) and your
-validator's `secp-backup` / `bls-backup` files — created during the official
-[full node installation](https://docs.monad.xyz/node-ops/full-node-installation#generate-keystores)
-at `/opt/monad/backup/`; keep copies off-server, they are the only way to recover the
-identity once the machine is gone. Copy them onto the full node, then:
+On a full node synced to the tip, with your backup files copied over — start with a
+dry run; it checks everything and changes nothing:
 
 ```bash
-./monad-failover.sh
+./monad-failover.sh --dry-run   # read-only preflight
+./monad-failover.sh             # live run
 ```
-
-The script walks through the procedure interactively and asks for confirmation before
-anything irreversible.
 
 | Flag | Effect |
 |---|---|
+| `--dry-run` | run every preflight check read-only; touch nothing |
 | `--backup-dir PATH` | where `secp-backup` / `bls-backup` live; skips the key-source prompt |
 | `--peer-host user@host` | check over SSH that the old validator is actually stopped |
 | `--resume` | pick up where a previous run left off |
+| `--version` | print version and exit |
 
-Keys can be provided two ways. The default is to read the backup files and extract the
-IKM secrets from them, which works with the old server completely unreachable. You can
-also paste the two IKM hex values by hand instead (input stays hidden).
+Fully interactive; asks for confirmation before anything irreversible. Keys are read
+from the backup files by default, or pasted as raw IKM values (hidden input).
 
-What it does, in order:
+## How it works
 
-1. Checks the node is in-sync, warns if RPC is publicly exposed, confirms you're on
-   the right host.
-2. Saves the full node's own keys and config to `/opt/monad/backup/failover-<timestamp>/`.
-3. Imports the validator keys into staging files (`id-secp.new` / `id-bls.new`) and
-   shows the public keys so you can verify them. Live keys are not touched yet.
-4. Sets `node_name`, `beneficiary` and the required flags (`enable_publisher`,
-   `enable_client`, `expand_to_group`).
-5. Signs a new name record with `self_record_seq_num` = previous + 1 and patches
-   `node.toml`.
-6. Asks you to confirm the old validator is stopped (or checks via `--peer-host`),
-   then cuts over: stop services, swap the keys into place, start services.
-7. Verifies sync and re-exports fresh `secp-backup` / `bls-backup` files from the
-   now-live keys.
+1. Verifies the node is in-sync and you're on the right host; backs up the full node's
+   own identity to `/opt/monad/backup/failover-<timestamp>/`.
+2. Imports the validator keys into staging files (`id-secp.new` / `id-bls.new`) and
+   shows the public keys for confirmation — live keys stay untouched until cutover.
+3. Sets `node_name`, `beneficiary` and the required flags, signs a new name record
+   with `self_record_seq_num` = previous + 1, patches `node.toml`.
+4. After you confirm the old validator is stopped or down: stops services, swaps the
+   keys in, restarts as validator, and re-exports fresh backup files from the live keys.
 
-## Design notes
+## Why trust a shell script with your validator keys?
 
-- The validator keys never exist at the live path until cutover. Everything before
-  that point can be aborted or re-run freely.
-- Cutover happens only after services are stopped and you've confirmed the old
-  validator is down. Never start the old machine again with the same keys — two nodes
-  signing with one identity is the one mistake you can't undo.
-- The full node's original identity is backed up before being replaced, so the machine
-  can be turned back into its old full-node self by hand if needed.
-- IKM values are format-validated and never echoed or written to logs.
-- Only `monad-bft`, `monad-execution` and `monad-rpc` are managed; anything else
-  running on the machine is left alone.
-- Every step records its completion, so a dropped SSH session is a `--resume`, not
-  a restart.
+Fair question. The mitigations, in the order they matter:
 
-## seq_num
+- **One auditable file** — no dependencies to vet beyond the Monad binaries and
+  coreutils. Read it before you run it; it's short.
+- **Dry-run first** — `--dry-run` exercises every check without touching a file,
+  key or service.
+- **Checksum-pinned** — the README hash must match the script; CI fails otherwise.
+- **ShellCheck-clean, CI-tested** on every commit.
+- **Nothing leaves the machine** — no telemetry; the only outbound calls are
+  public-IP detection (`ifconfig.me`) and the optional `--peer-host` SSH check.
+  Secrets are never logged or echoed. Details in [SECURITY.md](SECURITY.md).
 
-`self_record_seq_num` is monotonic per identity and peers reject anything stale. Give
-the script the last value the identity used (0 if it has never migrated); it signs with
-that plus one. If the old server is gone and you don't know the value, use anything you
-are sure is higher.
+## Notes
 
-## Troubleshooting
-
-| Symptom | What it means |
-|---|---|
-| `Odd number of digits` when signing | placeholder values in `node.toml`; the script sanitizes them automatically |
-| `ChecksumError` importing keys | `KEYSTORE_PASSWORD` in `.env` differs from the one the keystore was created with; the script re-encrypts from IKM under the current password |
-| `randao validation failed` after cutover | the secp and bls backups were swapped — re-check which file is which |
-| Public keys at the verify step look wrong | wrong backup files; answer no at the prompt and nothing is changed |
-
-## Requirements
-
-- A synced full node with `monad-keystore` and `monad-sign-name-record` in `PATH`
-- `KEYSTORE_PASSWORD` in `/home/monad/.env`
-- Your `secp-backup` / `bls-backup` files, or the raw IKM values
-- `monad-status` for the sync check (recommended)
-
-## Afterwards
-
-- If other full nodes peer with this validator as a dedicated node
-  (`[[fullnode_dedicated.identities]]`), update its name record in their `node.toml`.
-- Get the freshly exported backup files off the server again.
-- If the old machine comes back, wipe or re-key it before starting Monad services —
-  see [restoring the original validator](https://docs.monad.xyz/node-ops/node-recovery/node-migration#restoring-the-original-validator).
-  It must never run with the migrated keys.
+- Never start the old machine again with the same keys — two nodes signing with one
+  identity is the one mistake you can't undo.
+- `self_record_seq_num` is monotonic; peers reject stale values. If you don't know the
+  last value, enter anything you're sure is higher.
+- The VDP requires validators to push metrics to Monad Foundation's monitoring
+  infrastructure — set it up on the new server after migrating
+  ([docs](https://docs.monad.xyz/node-ops/validator-delegation-program)).
+- If downstream full nodes peer with this validator, update its name record in their
+  `node.toml`.
 
 MIT licensed.
