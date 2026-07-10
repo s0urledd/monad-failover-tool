@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Mock curl: answers ifconfig.me with a fixed IP; anything else fails loudly
+# so tests catch unexpected network calls.
+for arg in "$@"; do
+  if [[ "$arg" == *ifconfig.me* ]]; then
+    printf '203.0.113.7'
+    exit 0
+  fi
+done
+echo "mock curl: unexpected call: $*" >&2
+exit 1
