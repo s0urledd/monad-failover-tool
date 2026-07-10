@@ -11,10 +11,10 @@
 
 set -euo pipefail
 
-VERSION="4.1.0"
+VERSION="1.0.0"
 
-# ── paths ──────────────────────────────────────────────────
-MONAD_HOME="/home/monad"
+# ── paths (env-overridable for testing) ────────────────────
+MONAD_HOME="${MONAD_HOME:-/home/monad}"
 CONFIG_DIR="$MONAD_HOME/monad-bft/config"
 NODE_TOML="$CONFIG_DIR/node.toml"
 ENV_FILE="$MONAD_HOME/.env"
@@ -22,7 +22,7 @@ SECP_KEY="$CONFIG_DIR/id-secp"
 BLS_KEY="$CONFIG_DIR/id-bls"
 SECP_KEY_NEW="$CONFIG_DIR/id-secp.new"
 BLS_KEY_NEW="$CONFIG_DIR/id-bls.new"
-BACKUP_ROOT="/opt/monad/backup"
+BACKUP_ROOT="${BACKUP_ROOT:-/opt/monad/backup}"
 MONAD_SERVICES=(monad-bft monad-execution monad-rpc)
 
 # ── ui helpers ─────────────────────────────────────────────
