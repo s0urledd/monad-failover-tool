@@ -1,0 +1,14 @@
+network_name = "testnet"
+node_name = "fullnode-one"
+beneficiary = "0x0000000000000000000000000000000000000000"
+
+self_address = "<ENTER_IP>:8000"
+self_record_seq_num = <SEQ>
+self_name_record_sig = "<HEX_SIG>"
+
+[fullnode_raptorcast]
+enable_publisher = false
+enable_client = false
+
+[statesync]
+expand_to_group = false

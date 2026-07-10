@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Mock systemctl: records calls; is-active always reports inactive so the
+# script's "services stopped" checks pass.
+echo "systemctl $*" >> "${MOCK_LOG:-/dev/null}"
+case "${1:-}" in
+  is-active) exit 3 ;;
+  *)         exit 0 ;;
+esac
