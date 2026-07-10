@@ -96,20 +96,24 @@ check_sync() {
   fi
 }
 
+# Official Monad RPC ports (8080/8081) plus commonly exposed EVM RPC ports.
+RPC_PORTS=(8080 8081 8545 8546 9545 9546 18545 18546)
+
 check_rpc() {
-  step "RPC SECURITY CHECK"
-  if ss -ltn 2>/dev/null | grep -q ":8080"; then
-    local addr
-    addr="$(ss -ltn | grep ':8080' | awk '{print $4}' | head -1)"
-    if [[ "$addr" == *"0.0.0.0"* ]] || [[ "$addr" == *"*"* ]]; then
-      warn "RPC port 8080 is publicly listening"
-      echo "  Validators should not expose RPC publicly."
-      echo "  Consider binding to localhost or adding a firewall rule."
-    else
-      ok "RPC not publicly exposed"
+  step "RPC EXPOSURE CHECK"
+  local listeners exposed=()
+  listeners="$(ss -ltn 2>/dev/null | awk '{print $4}' || true)"
+  for port in "${RPC_PORTS[@]}"; do
+    if echo "$listeners" | grep -qE "^(0\.0\.0\.0|\*|\[::\]):${port}$"; then
+      exposed+=("$port")
     fi
+  done
+  if [[ ${#exposed[@]} -gt 0 ]]; then
+    warn "Publicly listening RPC ports: ${exposed[*]}"
+    echo "  Validators should not expose RPC publicly."
+    echo "  Bind to localhost or block these ports with a firewall."
   else
-    ok "RPC port 8080 not active"
+    ok "No RPC ports publicly exposed (checked: ${RPC_PORTS[*]})"
   fi
 }
 
