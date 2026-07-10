@@ -1,5 +1,8 @@
 # monad-failover
 
+[![ci](https://github.com/s0urledd/monad-failover-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/s0urledd/monad-failover-tool/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Promotes a synced Monad full node to a validator, following the official
 [node migration](https://docs.monad.xyz/node-ops/node-recovery/node-migration) procedure.
 Built for the case where the old validator server is gone: all it needs is a synced full
@@ -15,22 +18,26 @@ curl -sSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/main/m
 chmod +x monad-failover.sh
 
 sha256sum monad-failover.sh
-# 1c3e9f037302dd58b7f20499ff88be4141b8bf5ac6ad9d440f8017f0ed922eca
+# 69855a3b4eccff0d933dbd9cc98d1d29ab61f6784dcf549914ae207c3c6846cf
 ```
 
 ## Usage
 
-On a full node synced to the tip, with your backup files copied over:
+On a full node synced to the tip, with your backup files copied over — start with a
+dry run; it checks everything and changes nothing:
 
 ```bash
-./monad-failover.sh
+./monad-failover.sh --dry-run   # read-only preflight
+./monad-failover.sh             # live run
 ```
 
 | Flag | Effect |
 |---|---|
+| `--dry-run` | run every preflight check read-only; touch nothing |
 | `--backup-dir PATH` | where `secp-backup` / `bls-backup` live; skips the key-source prompt |
 | `--peer-host user@host` | check over SSH that the old validator is actually stopped |
 | `--resume` | pick up where a previous run left off |
+| `--version` | print version and exit |
 
 Fully interactive; asks for confirmation before anything irreversible. Keys are read
 from the backup files by default, or pasted as raw IKM values (hidden input).
@@ -45,6 +52,20 @@ from the backup files by default, or pasted as raw IKM values (hidden input).
    with `self_record_seq_num` = previous + 1, patches `node.toml`.
 4. After you confirm the old validator is stopped or down: stops services, swaps the
    keys in, restarts as validator, and re-exports fresh backup files from the live keys.
+
+## Why trust a shell script with your validator keys?
+
+Fair question. The mitigations, in the order they matter:
+
+- **One auditable file** — no dependencies to vet beyond the Monad binaries and
+  coreutils. Read it before you run it; it's short.
+- **Dry-run first** — `--dry-run` exercises every check without touching a file,
+  key or service.
+- **Checksum-pinned** — the README hash must match the script; CI fails otherwise.
+- **ShellCheck-clean, CI-tested** on every commit.
+- **Nothing leaves the machine** — no telemetry; the only outbound calls are
+  public-IP detection (`ifconfig.me`) and the optional `--peer-host` SSH check.
+  Secrets are never logged or echoed. Details in [SECURITY.md](SECURITY.md).
 
 ## Notes
 
