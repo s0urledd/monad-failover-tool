@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Mock monad-status: reports the status set in $MOCK_STATUS (default in-sync).
+echo "status: ${MOCK_STATUS:-in-sync}"
+echo "blockDifference: ${MOCK_BLOCK_DIFF:-0}"

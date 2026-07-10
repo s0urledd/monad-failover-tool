@@ -18,7 +18,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
-          shellcheck -S style monad-failover.sh
+          shellcheck -S style monad-failover.sh tests/mocks/*
 
       - name: README checksum matches script
         run: |
@@ -33,3 +33,16 @@ jobs:
           bash monad-failover.sh --version
           bash monad-failover.sh --help
           bash monad-failover.sh --dry-run && exit 1 || test $? -eq 1
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bats
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bats
+
+      - name: End-to-end tests (mocked Monad binaries)
+        run: bats tests
