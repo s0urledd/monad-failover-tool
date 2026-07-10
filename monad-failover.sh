@@ -7,10 +7,11 @@
 #
 # Usage:
 #   ./monad-failover.sh [--backup-dir PATH] [--peer-host user@host] [--resume]
+#   ./monad-failover.sh --dry-run   # read-only preflight, changes nothing
 
 set -euo pipefail
 
-VERSION="4.0.0"
+VERSION="4.1.0"
 
 # ── paths ──────────────────────────────────────────────────
 MONAD_HOME="/home/monad"
@@ -96,20 +97,24 @@ check_sync() {
   fi
 }
 
+# Official Monad RPC ports (8080/8081) plus commonly exposed EVM RPC ports.
+RPC_PORTS=(8080 8081 8545 8546 9545 9546 18545 18546)
+
 check_rpc() {
-  step "RPC SECURITY CHECK"
-  if ss -ltn 2>/dev/null | grep -q ":8080"; then
-    local addr
-    addr="$(ss -ltn | grep ':8080' | awk '{print $4}' | head -1)"
-    if [[ "$addr" == *"0.0.0.0"* ]] || [[ "$addr" == *"*"* ]]; then
-      warn "RPC port 8080 is publicly listening"
-      echo "  Validators should not expose RPC publicly."
-      echo "  Consider binding to localhost or adding a firewall rule."
-    else
-      ok "RPC not publicly exposed"
+  step "RPC EXPOSURE CHECK"
+  local listeners exposed=()
+  listeners="$(ss -ltn 2>/dev/null | awk '{print $4}' || true)"
+  for port in "${RPC_PORTS[@]}"; do
+    if echo "$listeners" | grep -qE "^(0\.0\.0\.0|\*|\[::\]):${port}$"; then
+      exposed+=("$port")
     fi
+  done
+  if [[ ${#exposed[@]} -gt 0 ]]; then
+    warn "Publicly listening RPC ports: ${exposed[*]}"
+    echo "  Validators should not expose RPC publicly."
+    echo "  Bind to localhost or block these ports with a firewall."
   else
-    ok "RPC port 8080 not active"
+    ok "No RPC ports publicly exposed (checked: ${RPC_PORTS[*]})"
   fi
 }
 
@@ -651,6 +656,109 @@ promote() {
   echo
   warn "If you have downstream full nodes, update this validator's"
   echo "  name record in their node.toml to maintain connectivity."
+
+  echo
+  warn "VDP: validators are required to push metrics to Monad Foundation's"
+  echo "  monitoring infrastructure. Make sure this server is pushing them:"
+  echo "  https://docs.monad.xyz/node-ops/validator-delegation-program"
+  echo
+}
+
+# ══════════════════════════════════════════════════════════
+# DRY RUN — read-only preflight, changes nothing
+# ══════════════════════════════════════════════════════════
+mode_dry_run() {
+  header
+  echo "${BOLD}DRY RUN${RESET} — read-only preflight. No files, keys or services are touched."
+  local fails=0 warns=0
+
+  step "REQUIRED COMMANDS"
+  local c
+  for c in curl systemctl sed monad-keystore monad-sign-name-record; do
+    if command -v "$c" >/dev/null 2>&1; then
+      ok "$c"
+    else
+      echo "${RED}✗${RESET} missing: $c"; fails=$((fails + 1))
+    fi
+  done
+  if command -v monad-status >/dev/null 2>&1; then
+    ok "monad-status"
+  else
+    warn "monad-status not installed — sync gate will need manual confirmation"
+    warns=$((warns + 1))
+  fi
+
+  step "FILES & ENVIRONMENT"
+  if [[ -f "$NODE_TOML" ]]; then ok "node.toml"; else
+    echo "${RED}✗${RESET} missing: $NODE_TOML"; fails=$((fails + 1))
+  fi
+  if [[ -f "$ENV_FILE" ]]; then
+    ok ".env"
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    if [[ -n "${KEYSTORE_PASSWORD:-}" ]]; then ok "KEYSTORE_PASSWORD set"; else
+      echo "${RED}✗${RESET} KEYSTORE_PASSWORD not set in $ENV_FILE"; fails=$((fails + 1))
+    fi
+  else
+    echo "${RED}✗${RESET} missing: $ENV_FILE"; fails=$((fails + 1))
+  fi
+
+  step "SYNC STATUS"
+  if command -v monad-status >/dev/null 2>&1; then
+    local out status diff
+    out="$(monad-status 2>/dev/null || true)"
+    status="$(echo "$out" | grep -m1 'status:' | awk '{print $2}' || true)"
+    diff="$(echo "$out" | grep -m1 'blockDifference:' | awk '{print $2}' || true)"
+    if [[ "$status" == "in-sync" ]]; then
+      ok "in-sync (block difference: ${diff:-0})"
+    else
+      echo "${RED}✗${RESET} node is ${status:-unknown} — must be in-sync before promotion"
+      fails=$((fails + 1))
+    fi
+  else
+    warn "cannot verify sync without monad-status"; warns=$((warns + 1))
+  fi
+
+  check_rpc
+  check_colocated_services
+
+  step "KEY BACKUP FILES"
+  local dir="$KEY_SOURCE_DIR" f ikm
+  [[ -z "$dir" || "$dir" == "-" ]] && dir="$BACKUP_ROOT"
+  for f in secp-backup bls-backup; do
+    if [[ -f "$dir/$f" ]]; then
+      ikm="$(extract_ikm_from_backup "$dir/$f")"
+      if validate_ikm "$ikm" >/dev/null; then
+        ok "$dir/$f (valid IKM format)"
+      else
+        warn "$dir/$f exists but contains no valid IKM"; warns=$((warns + 1))
+      fi
+    else
+      warn "$dir/$f not found — manual IKM entry would be required"; warns=$((warns + 1))
+    fi
+  done
+  ikm=""
+
+  if [[ -f "$NODE_TOML" ]]; then
+    verify_config_flags
+  fi
+
+  step "PLANNED ACTIONS (live run would do)"
+  echo "  1. Back up this server's keys and config to $BACKUP_ROOT/failover-<timestamp>/"
+  echo "  2. Import validator keys to staging files (id-secp.new / id-bls.new)"
+  echo "  3. Set node_name, beneficiary, required config flags"
+  echo "  4. Sign name record (seq_num = previous + 1) and patch node.toml"
+  echo "  5. After confirming the old validator is stopped: stop services,"
+  echo "     swap keys into place, restart as validator"
+  echo "  6. Re-export fresh key backups from the live keys"
+
+  echo
+  bar
+  if [[ "$fails" -gt 0 ]]; then
+    echo "${RED}✗${RESET} ${BOLD}Preflight failed${RESET} — $fails blocking issue(s), $warns warning(s)."
+    exit 1
+  fi
+  ok "${BOLD}Preflight passed${RESET} — $warns warning(s). This server is ready for a live run."
   echo
 }
 
@@ -662,24 +770,30 @@ usage() {
   echo
   echo "Usage:"
   echo "  ./monad-failover.sh [--backup-dir PATH] [--peer-host user@host] [--resume]"
+  echo "  ./monad-failover.sh --dry-run"
   echo
   echo "Flags:"
+  echo "  --dry-run     Read-only preflight: run every check, change nothing"
   echo "  --backup-dir  Directory containing secp-backup / bls-backup key files"
   echo "                (skips the interactive key-source prompt)"
   echo "  --peer-host   SSH target to verify the old validator is stopped"
   echo "  --resume      Continue from the last completed step"
+  echo "  --version     Print version and exit"
   exit 0
 }
 
 RESUME=false
 PEER_HOST=""
 KEY_SOURCE_DIR=""
+DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --dry-run)    DRY_RUN=true ;;
     --resume)     RESUME=true ;;
     --peer-host)  shift; PEER_HOST="${1:-}"; [[ -n "$PEER_HOST" ]] || die "--peer-host requires a value" ;;
     --backup-dir) shift; KEY_SOURCE_DIR="${1:-}"; [[ -n "$KEY_SOURCE_DIR" ]] || die "--backup-dir requires a value" ;;
+    --version)    echo "monad-failover v${VERSION}"; exit 0 ;;
     -h|--help|help) usage ;;
     *)            die "Unknown argument: $1. Run with --help for usage." ;;
   esac
@@ -687,6 +801,11 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── main ───────────────────────────────────────────────────
+if $DRY_RUN; then
+  mode_dry_run
+  exit 0
+fi
+
 mkdir -p "$STATE_DIR"
 
 # Adopt v3 promote state (per-mode dirs) so --resume keeps working across the upgrade
@@ -700,7 +819,12 @@ if ! $RESUME && [[ -f "$STATE_FILE" ]]; then
   if [[ -n "$_last" ]]; then
     warn "Previous run stopped at step $_last"
     echo "  Run with --resume to continue, or start fresh."
-    confirm_yn "  Start fresh?" && clear_state || { echo "  Use: ./monad-failover.sh --resume"; exit 0; }
+    if confirm_yn "  Start fresh?"; then
+      clear_state
+    else
+      echo "  Use: ./monad-failover.sh --resume"
+      exit 0
+    fi
   fi
 fi
 
