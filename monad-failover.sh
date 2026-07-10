@@ -651,6 +651,11 @@ promote() {
   echo
   warn "If you have downstream full nodes, update this validator's"
   echo "  name record in their node.toml to maintain connectivity."
+
+  echo
+  warn "VDP: validators are required to push metrics to Monad Foundation's"
+  echo "  monitoring infrastructure. Make sure this server is pushing them:"
+  echo "  https://docs.monad.xyz/node-ops/validator-delegation-program"
   echo
 }
 
