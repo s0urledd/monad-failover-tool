@@ -18,46 +18,13 @@ sha256sum monad-failover.sh
 # 01b5df25d716f312733ad34ee16d89942b317e8aaae9912d8abdb835f12074dc
 ```
 
-## Back up your keys now, not later
-
-Everything depends on having your validator's key backup files available when the
-machine is gone. If you followed the official
-[full node installation](https://docs.monad.xyz/node-ops/full-node-installation#generate-keystores)
-guide they already exist:
-
-```
-/opt/monad/backup/secp-backup
-/opt/monad/backup/bls-backup
-```
-
-If not, re-create them on the validator:
-
-```bash
-source /home/monad/.env
-
-monad-keystore recover \
-  --password "$KEYSTORE_PASSWORD" \
-  --keystore-path /home/monad/monad-bft/config/id-secp \
-  --key-type secp > /opt/monad/backup/secp-backup
-
-monad-keystore recover \
-  --password "$KEYSTORE_PASSWORD" \
-  --keystore-path /home/monad/monad-bft/config/id-bls \
-  --key-type bls > /opt/monad/backup/bls-backup
-```
-
-Copy both files somewhere off the server (password manager, secrets vault). They contain
-the private keys that *are* your validator identity: anyone holding them can take the
-validator over, and without them you cannot migrate at all. Losing the keys means
-re-registering with a new identity and moving every delegation by hand.
-
-While you're at it, note down the current `self_record_seq_num` and `beneficiary`
-values from the validator's `node.toml`. The script asks for both during failover.
-
 ## Running a failover
 
-You need a full node synced to the tip (`monad-status` reports `in-sync`). Copy your
-`secp-backup` and `bls-backup` files onto it, then:
+You need a full node synced to the tip (`monad-status` reports `in-sync`) and your
+validator's `secp-backup` / `bls-backup` files — created during the official
+[full node installation](https://docs.monad.xyz/node-ops/full-node-installation#generate-keystores)
+at `/opt/monad/backup/`; keep copies off-server, they are the only way to recover the
+identity once the machine is gone. Copy them onto the full node, then:
 
 ```bash
 ./monad-failover.sh
