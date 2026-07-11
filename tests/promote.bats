@@ -118,6 +118,10 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
 
+  # the uptime API was queried and reported the validator active
+  [[ "$output" == *"MockVal"* ]]
+  [[ "$output" == *"Uptime (24h): 100%"* ]]
+
   local cfg="$MONAD_HOME/monad-bft/config"
 
   # validator keys swapped in, staging files gone
@@ -270,6 +274,25 @@ EOF
   [[ "$output" == *"Staging keys are missing"* ]]
   # services must NOT have been stopped
   ! grep -q "systemctl stop monad-bft" "$MOCK_LOG"
+}
+
+@test "uptime API failure never blocks the promotion" {
+  make_healthy_env
+  export MOCK_API_FAIL=1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+1
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  [[ "$output" == *"not visible in the uptime API yet"* ]]
 }
 
 @test "leftover state file offers resume and exits cleanly when declined" {
