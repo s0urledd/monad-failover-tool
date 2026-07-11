@@ -1,11 +1,21 @@
 # Changelog
 
-## 1.1.1 — 2026-07-11
+## 1.2.0 — 2026-07-11
 
-- Removed the co-located-services check (axelard/tofnd/vald/nginx). It targeted
-  Axelar setups that do not occur on a Monad node, so it was only noise.
-- Removed the "Current SECP" line from the host-confirmation prompt. Showing the
-  full node's throwaway key told the operator nothing; hostname and public IP are
+### Added
+- **Post-cutover uptime verification.** Step 8 now queries the
+  [monval](https://monval.huginn.tech/) validator uptime API with the promoted
+  public key and prints how the network sees the validator: status, 24h uptime,
+  finalized/timeout counts and last round. A failed or not-yet-indexed lookup
+  only warns with the URL to check later; it never blocks the run. The final
+  output prints the API URL and the `monad-ledger-tail` live-events command
+  instead of explorer links.
+
+### Removed
+- The co-located-services check (axelard/tofnd/vald/nginx). It targeted Axelar
+  setups that do not occur on a Monad node, so it was only noise.
+- The "Current SECP" line from the host-confirmation prompt. Showing the full
+  node's throwaway key told the operator nothing; hostname and public IP are
   the identifying facts, and those stay.
 
 ## 1.1.0 — 2026-07-10

@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.1.1"
+VERSION="1.2.0"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -384,6 +384,46 @@ post_verify() {
   fi
 }
 
+# ── validator uptime API (monval by Huginn) ────────────────
+VALIDATOR_API_MAINNET="https://validator-api.huginn.tech/monad-api/validator/uptime"
+VALIDATOR_API_TESTNET="https://validator-api-testnet.huginn.tech/monad-api/validator/uptime"
+
+validator_api_url() {
+  local base
+  [[ "$NETWORK" == "mainnet" ]] && base="$VALIDATOR_API_MAINNET" || base="$VALIDATOR_API_TESTNET"
+  printf '%s/%s' "$base" "$SECP_PUB"
+}
+
+json_str() { printf '%s' "$1" | grep -o "\"$2\": *\"[^\"]*\"" | head -1 | sed 's/.*: *"//; s/"$//'; }
+json_num() { printf '%s' "$1" | grep -o "\"$2\": *[0-9.]*" | head -1 | sed 's/.*: *//'; }
+
+# Ask the network how it sees this validator. Never blocks the flow: on any
+# failure it prints the URL to check later and returns 0.
+check_validator_api() {
+  step "VALIDATOR UPTIME CHECK"
+  local url resp
+  url="$(validator_api_url)"
+  resp="$(curl -fsS --connect-timeout 10 "$url" 2>/dev/null || true)"
+
+  if ! printf '%s' "$resp" | grep -qE '"success": *true'; then
+    warn "Validator not visible in the uptime API yet (this can take a few minutes)."
+    echo "  Check later: $url"
+    return 0
+  fi
+
+  local name status uptime fin to last_round
+  name="$(json_str "$resp" validator_name)"
+  status="$(json_str "$resp" status)"
+  uptime="$(json_num "$resp" uptime_percent)"
+  fin="$(json_num "$resp" finalized_count)"
+  to="$(json_num "$resp" timeout_count)"
+  last_round="$(json_num "$resp" last_round)"
+
+  ok "${name:-validator} is ${BOLD}${status:-unknown}${RESET} on $NETWORK"
+  echo "  Uptime (24h): ${uptime:-?}% (${fin:-?} finalized, ${to:-?} timeout)"
+  [[ -n "$last_round" ]] && echo "  Last round:   $last_round"
+}
+
 detect_ip() {
   IP="$(public_ip)"
   [[ -n "$IP" ]] || die "Could not detect a valid public IPv4 address."
@@ -684,6 +724,7 @@ promote() {
   # ── 8. Verify + refresh key backups ──
   if ! $RESUME || ! completed_step 8; then
     post_verify
+    check_validator_api
     refresh_key_backups
     save_state "last_step" "8"
   fi
@@ -704,12 +745,10 @@ promote() {
 
   echo
   echo "${BOLD}VALIDATOR EVENTS${RESET}"
-  echo "  journalctl -u monad-ledger-tail -o cat -f | grep -i \"${SECP_PUB}\""
-  if [[ "$NETWORK" == "mainnet" ]]; then
-    echo "  https://monad.hoodscan.io/validator/${SECP_PUB}"
-  else
-    echo "  https://testnet.monad.hoodscan.io/validator/${SECP_PUB}?tab=Performance"
-  fi
+  echo "  Live (proposed / finalized / timeout events once in the active set):"
+  echo "    journalctl -u monad-ledger-tail -o cat -f | grep -i \"${SECP_PUB}\""
+  echo "  Uptime API:"
+  echo "    curl $(validator_api_url)"
 
   echo
   warn "If you have downstream full nodes, update this validator's"
