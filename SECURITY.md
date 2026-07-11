@@ -11,8 +11,10 @@ standard system tools. Concretely, it:
 - writes only under `/home/monad/monad-bft/config`, `/opt/monad/backup` and
   `/home/monad/.monad-failover` (resume state)
 - manages only the `monad-bft`, `monad-execution` and `monad-rpc` systemd units
-- makes one kind of outbound request: an HTTPS call to `ifconfig.me` to detect the
-  server's public IP
+- makes two kinds of outbound requests, both HTTPS: `ifconfig.me` to detect the
+  server's public IP, and the monval uptime API (`validator-api.huginn.tech`) after
+  cutover to confirm the network sees the validator. Only the public key is sent;
+  a failed API call never blocks the run
 
 It contains no telemetry and never transmits your keys or password anywhere. Secret
 files it creates (key backups, resume state) are created with a `077` umask so they
