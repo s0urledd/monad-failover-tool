@@ -1,9 +1,18 @@
 #!/usr/bin/env bash
-# Mock curl: answers ifconfig.me with a fixed IP; anything else fails loudly
-# so tests catch unexpected network calls.
+# Mock curl: answers ifconfig.me with a fixed IP and the monval uptime API
+# with fixture JSON (or a failure when MOCK_API_FAIL is set). Anything else
+# fails loudly so tests catch unexpected network calls.
 for arg in "$@"; do
   if [[ "$arg" == *ifconfig.me* ]]; then
     printf '203.0.113.7'
+    exit 0
+  fi
+  if [[ "$arg" == *huginn.tech* ]]; then
+    if [[ -n "${MOCK_API_FAIL:-}" ]]; then
+      exit 22
+    fi
+    secp="${arg##*/}"
+    printf '{"success": true, "uptime": {"validator_name": "MockVal", "secp_address": "%s", "status": "active", "window_hours": 24, "finalized_count": 356, "timeout_count": 0, "uptime_percent": 100, "last_round": 87138952}}' "$secp"
     exit 0
   fi
 done

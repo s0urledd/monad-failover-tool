@@ -18,7 +18,7 @@ curl -sSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/main/m
 chmod +x monad-failover.sh
 
 sha256sum monad-failover.sh
-# b7250ad2aa092e4eb80a024b2dc2971455eff97e54daf2f3778a4652aecc3a3f
+# a27d1379eaec021c2b41c50208ee710e6ad3e835cd70a03983649fbcecc3d1d9
 ```
 
 ## Usage
@@ -54,6 +54,9 @@ input).
 4. Asks you to confirm the old validator is stopped (you type `STOPPED`), then cuts
    over: stops services, swaps the keys in, restarts as validator, and re-exports
    fresh backup files from the live keys.
+5. Verifies the result: local sync status, plus a query to the
+   [monval](https://monval.huginn.tech/) uptime API so you see how the network sees
+   your validator (status, 24h uptime, finalized/timeout counts) right in the output.
 
 If the services fail to start after the swap, the run records the cutover as done so
 `--resume` never repeats it, and prints the exact commands to recover.
@@ -69,9 +72,10 @@ Fair question. The mitigations, in the order they matter:
 3. **Checksum-pinned.** The README hash must match the script, and CI fails otherwise.
 4. **Tested end-to-end.** CI runs the full promotion flow (including cutover failure
    and resume) against mocked Monad binaries with bats, plus ShellCheck, on every commit.
-5. **Nothing leaves the machine.** No telemetry. The only outbound call is an HTTPS
-   request to `ifconfig.me` for public-IP detection. Secrets are never logged, and
-   secret files are created `600`. See [SECURITY.md](SECURITY.md) for the full surface.
+5. **Nothing sensitive leaves the machine.** No telemetry. The only outbound calls
+   are HTTPS requests to `ifconfig.me` (public-IP detection) and the monval uptime
+   API (post-cutover check, public key only). Secrets are never logged, and secret
+   files are created `600`. See [SECURITY.md](SECURITY.md) for the full surface.
 
 ## Notes
 
