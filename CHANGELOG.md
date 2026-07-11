@@ -1,28 +1,54 @@
 # Changelog
 
+## 1.1.0 — 2026-07-10
+
+Security and robustness pass after a full audit of 1.0.0.
+
+### Changed / removed
+- **Removed `--peer-host`.** The SSH check treated an unreachable host as "stopped",
+  which was less safe than the manual path for the one check that prevents
+  double-signing. Cutover now requires the operator to type `STOPPED` after being
+  shown exactly how to stop and verify the old validator.
+
+### Fixed
+- **Cutover is now crash-safe.** Both staging keys are checked before services are
+  stopped, moves are guarded, and if the services fail to start after the key swap the
+  run records the step as complete so `--resume` never repeats the (now impossible)
+  swap. Recovery commands are printed on failure.
+- **Keystore password is no longer written next to the encrypted keys.** The separate
+  password-backup file and the `.env` copy were removed from the per-run backup
+  directory.
+- **Secret files are created with a `077` umask**, closing the create-then-chmod window
+  where backups were briefly world-readable. Backup directories are `700`.
+- **`.env` is parsed, not sourced.** Reading the keystore password no longer executes
+  the file as root.
+- **node.toml writes are injection-safe.** `beneficiary` (`0x` + 40 hex) and `node_name`
+  are validated, sed replacements are escaped, and every write is verified.
+- **Public IP detection uses HTTPS** and validates the result as an IPv4 address.
+- Key-backup export is atomic (temp + rename); a failure preserves the previous copy
+  and tells you where it is.
+- Network detection and resume-state values are validated more strictly.
+
+### Tests
+- Added coverage for resume-after-cutover-failure, the staging-key guard, the `STOPPED`
+  confirmation, beneficiary validation, and manual IKM entry.
+
 ## 1.0.0 — 2026-07-10
 
 First public release.
 
 **What it does:** promotes a synced Monad full node to a validator, following the
 official [node migration](https://docs.monad.xyz/node-ops/node-recovery/node-migration)
-procedure — built for the case where the old validator server is unreachable.
+procedure, built for the case where the old validator server is unreachable.
 
 - Key backup files (`secp-backup` / `bls-backup`) as the primary key source, with
   automatic IKM extraction; manual hidden IKM entry as the alternative
   (`--backup-dir` to skip the prompt).
-- Staging keys (`id-secp.new` / `id-bls.new`): live keys untouched until cutover,
-  which happens only after services stop and the old validator is confirmed
-  stopped or down (`--peer-host` for an SSH check).
-- `--dry-run`: read-only preflight that runs every check and changes nothing.
-- Monotonic `self_record_seq_num` handling, name-record signing, `node.toml`
-  patching with verification, optional `node_name` takeover per the docs.
-- Full-node identity backed up before overwrite; fresh official-format key
-  backups re-exported from the live keys after cutover (old files preserved
-  with a timestamp suffix).
-- RPC exposure check across 8080, 8081, 8545, 8546, 9545, 9546, 18545, 18546.
-- Per-step `--resume`; secrets never logged or echoed; only `monad-bft`,
-  `monad-execution` and `monad-rpc` are managed.
-- Post-migration VDP reminder (metrics push to Monad Foundation monitoring).
-- CI: ShellCheck (style), README-checksum consistency gate, and a mocked
-  end-to-end promotion test suite (bats).
+- Staging keys (`id-secp.new` / `id-bls.new`): live keys untouched until cutover.
+- `--dry-run` read-only preflight.
+- Monotonic `self_record_seq_num`, name-record signing, `node.toml` patching,
+  optional `node_name` takeover.
+- Full-node identity backed up before overwrite; fresh key backups re-exported after
+  cutover.
+- RPC exposure check, per-step `--resume`, VDP metrics reminder.
+- CI: ShellCheck, README-checksum gate, and a mocked end-to-end test suite (bats).
