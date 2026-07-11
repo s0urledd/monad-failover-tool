@@ -18,7 +18,7 @@ curl -sSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/main/m
 chmod +x monad-failover.sh
 
 sha256sum monad-failover.sh
-# b7250ad2aa092e4eb80a024b2dc2971455eff97e54daf2f3778a4652aecc3a3f
+# 69e010064cee249893c83ca361e1a6ae8ecac4d1ded5ff1008887d16d43fe75d
 ```
 
 ## Usage

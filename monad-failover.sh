@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -178,26 +178,8 @@ run_location_guard() {
   ip="$(public_ip)"
   [[ -n "$ip" ]] && echo "  Public IP: ${BOLD}${ip}${RESET}"
 
-  if [[ -f "$SECP_KEY" ]] && [[ -n "${KEYSTORE_PASSWORD:-}" ]]; then
-    local cur_pub
-    cur_pub="$(recover_pubkey "$SECP_KEY" secp)"
-    [[ -n "$cur_pub" ]] && echo "  Current SECP: ${cur_pub:0:24}..."
-  fi
-
   echo
   confirm_yn "Is this the correct target host?" || die "Aborted."
-}
-
-check_colocated_services() {
-  local colocated=()
-  for svc in axelard tofnd vald nginx; do
-    systemctl is-active --quiet "$svc" 2>/dev/null && colocated+=("$svc")
-  done
-  if [[ ${#colocated[@]} -gt 0 ]]; then
-    warn "Co-located services: ${colocated[*]}"
-    echo "  This tool only manages: ${MONAD_SERVICES[*]}"
-    echo "  It will NOT touch the services above."
-  fi
 }
 
 # ── key helpers ────────────────────────────────────────────
@@ -465,7 +447,6 @@ promote() {
   if ! $RESUME || ! completed_step 1; then
     check_sync
     check_rpc
-    check_colocated_services
     save_state "last_step" "1"
   fi
 
@@ -797,7 +778,6 @@ mode_dry_run() {
   fi
 
   check_rpc
-  check_colocated_services
 
   step "KEY BACKUP FILES"
   local dir="$KEY_SOURCE_DIR" f ikm
