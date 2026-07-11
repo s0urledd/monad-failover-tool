@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.1 — 2026-07-11
+
+- Removed the co-located-services check (axelard/tofnd/vald/nginx). It targeted
+  Axelar setups that do not occur on a Monad node, so it was only noise.
+- Removed the "Current SECP" line from the host-confirmation prompt. Showing the
+  full node's throwaway key told the operator nothing; hostname and public IP are
+  the identifying facts, and those stay.
+
 ## 1.1.0 — 2026-07-10
 
 Security and robustness pass after a full audit of 1.0.0.
