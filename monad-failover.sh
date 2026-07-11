@@ -6,12 +6,16 @@
 #   https://docs.monad.xyz/node-ops/node-recovery/node-migration
 #
 # Usage:
-#   ./monad-failover.sh [--backup-dir PATH] [--peer-host user@host] [--resume]
+#   ./monad-failover.sh [--backup-dir PATH] [--resume]
 #   ./monad-failover.sh --dry-run   # read-only preflight, changes nothing
 
 set -euo pipefail
 
-VERSION="1.0.0"
+# Secrets (key backups, state) must never be created world-readable, not even
+# for the instant between open() and chmod. Restrict from the start.
+umask 077
+
+VERSION="1.1.0"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -46,13 +50,51 @@ bar()      { echo "${DIM}━━━━━━━━━━━━━━━━━━�
 step()     { echo; echo "${CYAN}▶${RESET} ${BOLD}$*${RESET}"; }
 ok()       { echo "${GREEN}✔${RESET} $*"; }
 warn()     { echo "${YELLOW}⚠${RESET} $*"; }
-die()      { echo "${RED}✗${RESET} $*" >&2; exit 1; }
+die() {
+  printf '%b✗%b %s\n' "$RED" "$RESET" "${1:-Aborted.}" >&2
+  shift || true
+  local line
+  for line in "$@"; do printf '   %s\n' "$line" >&2; done
+  exit 1
+}
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Missing command: $1"; }
 
 confirm_yn() {
   local prompt="$1"
   read -r -p "$prompt (y/N): " ans
   case "${ans,,}" in y|yes) return 0 ;; *) return 1 ;; esac
+}
+
+# Read KEYSTORE_PASSWORD from .env WITHOUT sourcing it. .env is owned by the
+# monad user; sourcing it as root would execute anything a compromised monad
+# account placed there. We only ever need this one value.
+load_keystore_password() {
+  local line val
+  line="$(grep -m1 '^KEYSTORE_PASSWORD=' "$ENV_FILE" 2>/dev/null || true)"
+  [[ -n "$line" ]] || return 1
+  val="${line#KEYSTORE_PASSWORD=}"
+  if [[ "$val" == \'*\' ]]; then
+    val="${val#\'}"; val="${val%\'}"
+  elif [[ "$val" == \"*\" ]]; then
+    val="${val#\"}"; val="${val%\"}"
+  fi
+  KEYSTORE_PASSWORD="$val"
+}
+
+# Detect the public IPv4 over HTTPS and validate it. Echoes the IP or nothing.
+public_ip() {
+  local ip
+  ip="$(curl -fsS4 --connect-timeout 10 https://ifconfig.me 2>/dev/null || true)"
+  if [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+    printf '%s' "$ip"
+  fi
+}
+
+# Escape text for safe use as the replacement side of a sed s||| command
+# (delimiter |, plus & and backslash). Prevents node.toml corruption or
+# command execution from crafted beneficiary/node_name/address values.
+sed_escape_replacement() {
+  printf '%s' "$1" | sed -e 's/[&\\|]/\\&/g'
 }
 
 # ── state / resume ─────────────────────────────────────────
@@ -75,7 +117,7 @@ clear_state() { rm -f "$STATE_FILE"; }
 
 completed_step() {
   local c; c="$(load_state "last_step")"
-  [[ -n "$c" ]] && [[ "$c" -ge "$1" ]]
+  [[ "$c" =~ ^[0-9]+$ ]] && [[ "$c" -ge "$1" ]]
 }
 
 # ── guards ─────────────────────────────────────────────────
@@ -119,9 +161,9 @@ check_rpc() {
 }
 
 detect_network() {
-  NETWORK="$(grep '^network_name' "$NODE_TOML" 2>/dev/null | cut -d '"' -f2 || true)"
-  if [[ -z "$NETWORK" ]]; then
-    read -r -p "Could not detect network. Enter (mainnet/testnet): " NETWORK
+  NETWORK="$(grep -m1 '^network_name' "$NODE_TOML" 2>/dev/null | cut -d '"' -f2 || true)"
+  if [[ "$NETWORK" != "mainnet" && "$NETWORK" != "testnet" ]]; then
+    read -r -p "Network could not be detected. Enter (mainnet/testnet): " NETWORK
     [[ "$NETWORK" == "mainnet" || "$NETWORK" == "testnet" ]] || die "Invalid network"
   fi
   ok "Network: $NETWORK"
@@ -133,7 +175,7 @@ run_location_guard() {
   echo "  Hostname: ${BOLD}$(hostname)${RESET}"
 
   local ip
-  ip="$(curl -s4 --connect-timeout 5 ifconfig.me || true)"
+  ip="$(public_ip)"
   [[ -n "$ip" ]] && echo "  Public IP: ${BOLD}${ip}${RESET}"
 
   if [[ -f "$SECP_KEY" ]] && [[ -n "${KEYSTORE_PASSWORD:-}" ]]; then
@@ -179,11 +221,11 @@ validate_ikm() {
 # (format produced by `monad-keystore recover`, per docs.monad.xyz).
 extract_ikm_from_backup() {
   grep -E "Keystore secret:|Keep your IKM secure:" "$1" 2>/dev/null \
-    | awk '{print $NF}' | head -1 || true
+    | awk '{print $NF}' | tr -d '\r' | head -1 || true
 }
 
 import_staged_key() {
-  local ikm="$1" keypath="$2" keytype="$3"
+  local ikm="$1" keypath="$2"
   monad-keystore import \
     --ikm "$ikm" \
     --keystore-path "$keypath" \
@@ -217,20 +259,19 @@ fix_ownership() {
 
 set_toml_value() {
   local file="$1" key="$2" value="$3" section="${4:-}"
+  local esc; esc="$(sed_escape_replacement "$value")"
 
   if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null; then
-    sed -i "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = ${value}|" "$file"
-    return
+    sed -i "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = ${esc}|" "$file"
+  elif [[ -z "$section" ]]; then
+    die "Key '$key' not found in $file and no section given — refusing to append blindly."
+  elif grep -qF "[$section]" "$file"; then
+    sed -i "\\|^\\[$section\\]|a ${key} = ${esc}" "$file"
+  else
+    die "Section [$section] not found in $file — cannot place '$key'."
   fi
 
-  if [[ -z "$section" ]]; then
-    die "Key '$key' not found in $file and no section given — refusing to append blindly."
-  fi
-  grep -qF "[$section]" "$file" \
-    || die "Section [$section] not found in $file — cannot place '$key'."
-  sed -i "\\|^\\[$section\\]|a ${key} = ${value}" "$file"
-  grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file" \
-    || die "Failed to insert '$key' under [$section]."
+  grep -qF "${key} = ${value}" "$file" || die "Failed to write '$key' to $file"
 }
 
 verify_config_flags() {
@@ -273,12 +314,15 @@ sign_and_patch() {
   ok "Name record signed"
 
   step "PATCH node.toml"
-  sed -i "s|^self_address.*|self_address = \"$SELF_ADDRESS\"|" "$toml"
+  local esc_addr esc_sig
+  esc_addr="$(sed_escape_replacement "$SELF_ADDRESS")"
+  esc_sig="$(sed_escape_replacement "$SELF_SIG")"
+  sed -i "s|^self_address.*|self_address = \"$esc_addr\"|" "$toml"
   sed -i "s|^self_record_seq_num.*|self_record_seq_num = $seq|" "$toml"
-  sed -i "s|^self_name_record_sig.*|self_name_record_sig = \"$SELF_SIG\"|" "$toml"
+  sed -i "s|^self_name_record_sig.*|self_name_record_sig = \"$esc_sig\"|" "$toml"
 
-  grep -q "^self_address = \"$SELF_ADDRESS\"" "$toml" || die "Failed to write self_address"
-  grep -q "^self_record_seq_num = $seq" "$toml"        || die "Failed to write self_record_seq_num"
+  grep -qF "self_address = \"$SELF_ADDRESS\"" "$toml" || die "Failed to write self_address"
+  grep -qF "self_record_seq_num = $seq" "$toml"        || die "Failed to write self_record_seq_num"
   fix_ownership
   ok "node.toml patched and verified"
 }
@@ -289,20 +333,34 @@ backup_config() {
   ts="$(date +%Y%m%d-%H%M%S)"
   BACKUP_DIR="$BACKUP_ROOT/failover-${ts}"
   mkdir -p "$BACKUP_DIR"
+  chmod 700 "$BACKUP_DIR" 2>/dev/null || true
 
+  # Preserve this server's own identity (encrypted keystores + config) so it
+  # can be restored to a full node by hand. The keystore password is NOT copied
+  # here — colocating it with the encrypted keys would defeat the encryption.
   for f in node.toml id-secp id-bls; do
     [[ -f "$CONFIG_DIR/$f" ]] && cp -a "$CONFIG_DIR/$f" "$BACKUP_DIR/"
   done
   [[ -f "$MONAD_HOME/pubkey-secp-bls" ]] && cp -a "$MONAD_HOME/pubkey-secp-bls" "$BACKUP_DIR/"
-  [[ -f "$ENV_FILE" ]] && cp -a "$ENV_FILE" "$BACKUP_DIR/"
-
-  if [[ -n "${KEYSTORE_PASSWORD:-}" ]]; then
-    printf '%s' "$KEYSTORE_PASSWORD" > "$BACKUP_DIR/keystore-password-backup"
-    chmod 600 "$BACKUP_DIR/keystore-password-backup"
-  fi
 
   ok "Config backed up to $BACKUP_DIR"
   save_state "backup_dir" "$BACKUP_DIR"
+}
+
+# Export one key to an official-format backup file, atomically (temp + rename)
+# so a failure never leaves a truncated file in place. Returns nonzero on error.
+export_key_backup() {
+  local keypath="$1" keytype="$2" out="$3"
+  if monad-keystore recover \
+      --password "$KEYSTORE_PASSWORD" \
+      --keystore-path "$keypath" \
+      --key-type "$keytype" > "${out}.partial" 2>/dev/null; then
+    mv "${out}.partial" "$out"
+    chmod 600 "$out"
+    return 0
+  fi
+  rm -f "${out}.partial"
+  return 1
 }
 
 # Re-export official-format key backups from the live validator keys
@@ -310,25 +368,23 @@ backup_config() {
 refresh_key_backups() {
   step "REFRESH KEY BACKUPS"
   mkdir -p "$BACKUP_ROOT"
+  chmod 700 "$BACKUP_ROOT" 2>/dev/null || true
   local ts
   ts="$(date +%Y%m%d%H%M%S)"
+  local se="$BACKUP_ROOT/secp-backup" bl="$BACKUP_ROOT/bls-backup"
 
-  [[ -f "$BACKUP_ROOT/secp-backup" ]] && mv "$BACKUP_ROOT/secp-backup" "$BACKUP_ROOT/secp-backup.${ts}.bak"
-  [[ -f "$BACKUP_ROOT/bls-backup" ]]  && mv "$BACKUP_ROOT/bls-backup"  "$BACKUP_ROOT/bls-backup.${ts}.bak"
+  [[ -f "$se" ]] && mv "$se" "$se.${ts}.bak"
+  [[ -f "$bl" ]] && mv "$bl" "$bl.${ts}.bak"
 
-  monad-keystore recover \
-    --password "$KEYSTORE_PASSWORD" \
-    --keystore-path "$SECP_KEY" \
-    --key-type secp > "$BACKUP_ROOT/secp-backup"
-  monad-keystore recover \
-    --password "$KEYSTORE_PASSWORD" \
-    --keystore-path "$BLS_KEY" \
-    --key-type bls > "$BACKUP_ROOT/bls-backup"
-  chmod 600 "$BACKUP_ROOT/secp-backup" "$BACKUP_ROOT/bls-backup"
-
-  ok "Key backups exported: $BACKUP_ROOT/{secp-backup,bls-backup}"
-  warn "Store copies of both files OUTSIDE this server (password manager / vault)."
-  echo "  They are the only way to recover this validator's identity."
+  if export_key_backup "$SECP_KEY" secp "$se" && export_key_backup "$BLS_KEY" bls "$bl"; then
+    ok "Key backups exported: $BACKUP_ROOT/{secp-backup,bls-backup}"
+    warn "Store copies of both files OUTSIDE this server (password manager / vault)."
+    echo "  They are the only way to recover this validator's identity."
+  else
+    warn "Could not re-export key backups."
+    echo "  Previous copies are preserved as *.${ts}.bak in $BACKUP_ROOT."
+    echo "  Re-run later with: ./monad-failover.sh --resume"
+  fi
 }
 
 post_verify() {
@@ -347,8 +403,8 @@ post_verify() {
 }
 
 detect_ip() {
-  IP="$(curl -s4 --connect-timeout 10 ifconfig.me || true)"
-  [[ -n "$IP" ]] || die "Could not detect public IP"
+  IP="$(public_ip)"
+  [[ -n "$IP" ]] || die "Could not detect a valid public IPv4 address."
   ok "Public IP: $IP"
 }
 
@@ -383,8 +439,7 @@ promote() {
   [[ -f "$NODE_TOML" ]] || die "node.toml not found: $NODE_TOML"
   [[ -f "$ENV_FILE" ]]  || die ".env not found: $ENV_FILE"
 
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
+  load_keystore_password || die "KEYSTORE_PASSWORD not set in $ENV_FILE"
   [[ -n "${KEYSTORE_PASSWORD:-}" ]] || die "KEYSTORE_PASSWORD not set in $ENV_FILE"
 
   # ── resume restore ──
@@ -482,11 +537,11 @@ promote() {
     fi
 
     step "Importing SECP key (staging)"
-    import_staged_key "$SECP_IKM" "$SECP_KEY_NEW" secp
+    import_staged_key "$SECP_IKM" "$SECP_KEY_NEW"
     ok "SECP key imported to id-secp.new"
 
     step "Importing BLS key (staging)"
-    import_staged_key "$BLS_IKM" "$BLS_KEY_NEW" bls
+    import_staged_key "$BLS_IKM" "$BLS_KEY_NEW"
     ok "BLS key imported to id-bls.new"
     SECP_IKM="" BLS_IKM=""
 
@@ -517,6 +572,8 @@ promote() {
     echo "Enter the beneficiary address from the old validator's node.toml"
     read -r -p "beneficiary: " BENEFICIARY
     if [[ -n "$BENEFICIARY" ]]; then
+      [[ "$BENEFICIARY" =~ ^0x[0-9a-fA-F]{40}$ ]] \
+        || die "beneficiary must be a 0x-prefixed 40-hex-character address"
       set_toml_value "$NODE_TOML" "beneficiary" "\"$BENEFICIARY\""
       ok "Beneficiary: $BENEFICIARY"
     else
@@ -529,6 +586,8 @@ promote() {
     echo "node_name during migration. Leave empty to keep the current name."
     read -r -p "node_name: " NODE_NAME
     if [[ -n "$NODE_NAME" ]]; then
+      [[ "$NODE_NAME" =~ ^[A-Za-z0-9._-]{1,64}$ ]] \
+        || die "node_name may contain only letters, digits, dot, dash, underscore (max 64)"
       set_toml_value "$NODE_TOML" "node_name" "\"$NODE_NAME\""
       ok "node_name: $NODE_NAME"
     else
@@ -579,31 +638,23 @@ promote() {
     echo "  BLS  key:    ${BLS_PUB:0:24}..."
     echo
 
-    if [[ -n "$PEER_HOST" ]]; then
-      step "CHECK PEER HOST: $PEER_HOST"
-      local peer_active=false
-      for svc in monad-bft monad-execution; do
-        if ssh -o ConnectTimeout=10 "$PEER_HOST" \
-          "systemctl is-active --quiet $svc" 2>/dev/null; then
-          peer_active=true
-        fi
-      done
-      if $peer_active; then
-        die "Monad services still running on $PEER_HOST. Stop them first:" \
-          "  ssh $PEER_HOST 'systemctl stop ${MONAD_SERVICES[*]}'" \
-          "then re-run with --resume."
-      else
-        ok "Peer services already stopped"
-      fi
-    else
-      warn "The old validator must be ${BOLD}STOPPED or DOWN${RESET} before proceeding."
-      echo "  If the server is reachable, run on it:"
-      echo "    systemctl stop monad-bft monad-execution monad-rpc"
-      echo "  If the server is dead/unreachable, ensure it cannot come back"
-      echo "  online with the old keys (power it off at the provider if needed)."
-      echo
-      confirm_yn "Old validator confirmed stopped or down?" || die "Aborted."
-    fi
+    bar
+    warn "The old validator MUST be ${BOLD}stopped or fully offline${RESET} before cutover."
+    echo "  Running two nodes with the same keys corrupts this validator's"
+    echo "  consensus participation and name record. This is the one step you"
+    echo "  cannot take back — get it right."
+    echo
+    echo "  • If the old server is reachable, stop it now:"
+    echo "      ${BOLD}systemctl stop monad-bft monad-execution monad-rpc${RESET}"
+    echo "    then confirm it is down:"
+    echo "      systemctl is-active monad-bft monad-execution monad-rpc   # expect: inactive"
+    echo "  • If the old server is dead or unreachable, make sure it cannot come"
+    echo "    back online with these keys (power it off at your provider)."
+    echo
+    echo "  Type ${BOLD}STOPPED${RESET} (in capitals) to confirm the old validator is down."
+    read -r -p "  > " confirm_stopped
+    [[ "$confirm_stopped" == "STOPPED" ]] || die "Not confirmed — aborting before cutover."
+    ok "Old validator confirmed stopped or offline"
 
     bar
     warn "${BOLD}POINT OF NO RETURN${RESET}"
@@ -613,12 +664,38 @@ promote() {
     confirm_yn "Proceed with cutover?" || die "Aborted."
 
     step "CUTOVER"
+    # Both staging keys must exist before we touch services — never leave a
+    # half-swapped identity.
+    [[ -f "$SECP_KEY_NEW" && -f "$BLS_KEY_NEW" ]] || die \
+      "Staging keys are missing — refusing to stop services." \
+      "Start a fresh run so the key-import step re-creates them."
+
     stop_monad_services
-    mv "$SECP_KEY_NEW" "$SECP_KEY"
-    mv "$BLS_KEY_NEW" "$BLS_KEY"
+
+    mv -f "$SECP_KEY_NEW" "$SECP_KEY" || die \
+      "Could not place the SECP key. Services are stopped; keys are unchanged." \
+      "Fix the cause, then start a fresh run to re-stage the keys."
+    if ! mv -f "$BLS_KEY_NEW" "$BLS_KEY"; then
+      die "CRITICAL: the SECP key was placed but the BLS key was not." \
+        "This node now has a mismatched identity. Do NOT start the services." \
+        "Start a fresh run to re-stage both keys, or restore this node's" \
+        "previous identity from: ${BACKUP_DIR:-$BACKUP_ROOT}"
+    fi
     fix_ownership
     systemctl enable "${MONAD_SERVICES[@]}" 2>/dev/null || true
-    start_monad_services
+
+    # The key swap is done. If the services fail to start, record step 7 as
+    # complete FIRST so --resume never repeats the (now impossible) swap, then
+    # hand the operator the exact recovery commands.
+    if ! systemctl start "${MONAD_SERVICES[@]}"; then
+      save_state "last_step" "7"
+      die "The validator keys are in place, but the services failed to start." \
+        "The swap is done — do NOT re-run the cutover." \
+        "Diagnose: journalctl -xeu monad-bft" \
+        "Start when fixed: systemctl start ${MONAD_SERVICES[*]}" \
+        "Then finish up:  ./monad-failover.sh --resume"
+    fi
+    ok "Services started"
 
     save_state "last_step" "7"
   fi
@@ -694,9 +771,9 @@ mode_dry_run() {
   fi
   if [[ -f "$ENV_FILE" ]]; then
     ok ".env"
-    # shellcheck disable=SC1090
-    source "$ENV_FILE"
-    if [[ -n "${KEYSTORE_PASSWORD:-}" ]]; then ok "KEYSTORE_PASSWORD set"; else
+    if load_keystore_password && [[ -n "${KEYSTORE_PASSWORD:-}" ]]; then
+      ok "KEYSTORE_PASSWORD set"
+    else
       echo "${RED}✗${RESET} KEYSTORE_PASSWORD not set in $ENV_FILE"; fails=$((fails + 1))
     fi
   else
@@ -769,21 +846,19 @@ usage() {
   echo "monad-failover v${VERSION} — promote a synced Monad full node to validator"
   echo
   echo "Usage:"
-  echo "  ./monad-failover.sh [--backup-dir PATH] [--peer-host user@host] [--resume]"
+  echo "  ./monad-failover.sh [--backup-dir PATH] [--resume]"
   echo "  ./monad-failover.sh --dry-run"
   echo
   echo "Flags:"
   echo "  --dry-run     Read-only preflight: run every check, change nothing"
   echo "  --backup-dir  Directory containing secp-backup / bls-backup key files"
   echo "                (skips the interactive key-source prompt)"
-  echo "  --peer-host   SSH target to verify the old validator is stopped"
   echo "  --resume      Continue from the last completed step"
   echo "  --version     Print version and exit"
   exit 0
 }
 
 RESUME=false
-PEER_HOST=""
 KEY_SOURCE_DIR=""
 DRY_RUN=false
 
@@ -791,7 +866,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)    DRY_RUN=true ;;
     --resume)     RESUME=true ;;
-    --peer-host)  shift; PEER_HOST="${1:-}"; [[ -n "$PEER_HOST" ]] || die "--peer-host requires a value" ;;
     --backup-dir) shift; KEY_SOURCE_DIR="${1:-}"; [[ -n "$KEY_SOURCE_DIR" ]] || die "--backup-dir requires a value" ;;
     --version)    echo "monad-failover v${VERSION}"; exit 0 ;;
     -h|--help|help) usage ;;
