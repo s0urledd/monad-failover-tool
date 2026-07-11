@@ -745,7 +745,7 @@ promote() {
 
   echo
   echo "${BOLD}VALIDATOR EVENTS${RESET}"
-  echo "  Live (proposed / finalized / timeout events once in the active set):"
+  echo "  Follow your validator's block activity live:"
   echo "    journalctl -u monad-ledger-tail -o cat -f | grep -i \"${SECP_PUB}\""
   echo "  Uptime API:"
   echo "    curl $(validator_api_url)"
