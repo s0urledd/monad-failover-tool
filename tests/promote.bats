@@ -102,7 +102,7 @@ EOF
   make_healthy_env
 
   # answers: host ok / key source: backup files / dir: default /
-  # keys match / beneficiary / node_name / last seq / old validator stopped / cutover
+  # keys match / beneficiary / node_name / last seq / STOPPED confirm / cutover
   run bash "$SCRIPT" <<EOF
 y
 1
@@ -111,7 +111,7 @@ y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
 1
-y
+STOPPED
 y
 EOF
 
@@ -141,7 +141,9 @@ EOF
   [ -n "$bdir" ]
   grep -q "ikm=9999" "$bdir/id-secp"
   [ -f "$bdir/node.toml" ]
-  [ -f "$bdir/keystore-password-backup" ]
+  # the keystore password must NOT be colocated with the encrypted keys
+  [ ! -f "$bdir/keystore-password-backup" ]
+  [ ! -f "$bdir/.env" ]
 
   # fresh key backups re-exported from the live keys; old ones preserved
   grep -q "Keystore secret: $SECP_IKM" "$BACKUP_ROOT/secp-backup"
@@ -154,6 +156,120 @@ EOF
 
   # resume state cleared after success
   [ ! -f "$MONAD_HOME/.monad-failover/state" ]
+}
+
+@test "cutover is refused unless the operator types STOPPED" {
+  make_healthy_env
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+1
+yes
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Not confirmed"* ]]
+  # nothing swapped: the full node's own key is untouched
+  grep -q "ikm=9999" "$MONAD_HOME/monad-bft/config/id-secp"
+}
+
+@test "malformed beneficiary is rejected before any cutover" {
+  make_healthy_env
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+not-an-address
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"beneficiary must be"* ]]
+  grep -q "ikm=9999" "$MONAD_HOME/monad-bft/config/id-secp"
+}
+
+@test "manual IKM entry promotes successfully" {
+  make_healthy_env
+  rm -f "$BACKUP_ROOT/secp-backup" "$BACKUP_ROOT/bls-backup"
+  run bash "$SCRIPT" <<EOF
+y
+2
+$SECP_IKM
+$BLS_IKM
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+1
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  grep -q "ikm=$SECP_IKM" "$MONAD_HOME/monad-bft/config/id-secp"
+}
+
+@test "resume completes after services fail to start during cutover" {
+  make_healthy_env
+  export MOCK_FAIL_START="$BATS_TEST_TMPDIR/failstart"
+  touch "$MOCK_FAIL_START"
+
+  # First run: dies when the services fail to start, AFTER the key swap.
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+1
+STOPPED
+y
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to start"* ]]
+
+  local cfg="$MONAD_HOME/monad-bft/config"
+  # keys already swapped; staging consumed; state advanced so resume won't re-swap
+  grep -q "ikm=$SECP_IKM" "$cfg/id-secp"
+  [ ! -f "$cfg/id-secp.new" ]
+  grep -q "last_step=7" "$MONAD_HOME/.monad-failover/state"
+
+  # Resume: services start fine now, bookkeeping finishes, state cleared.
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  [ ! -f "$MONAD_HOME/.monad-failover/state" ]
+}
+
+@test "cutover refuses when a staging key is missing (no service stop)" {
+  make_healthy_env
+  # Simulate a prior run that reached the cutover gate with state at 6 but
+  # only one staging file present.
+  mkdir -p "$MONAD_HOME/.monad-failover"
+  cat > "$MONAD_HOME/.monad-failover/state" <<EOF
+last_step=6
+network=testnet
+new_seq=2
+secp_pub=0xSECPtest
+bls_pub=0xBLStest
+ip=203.0.113.7
+self_address=203.0.113.7:8000
+self_sig=abcd
+beneficiary=0xBEEF00000000000000000000000000000000BEEF
+backup_dir=$BACKUP_ROOT/failover-x
+EOF
+  : > "$MONAD_HOME/monad-bft/config/id-secp.new"   # only one staging key
+
+  run bash "$SCRIPT" --resume <<EOF
+STOPPED
+y
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Staging keys are missing"* ]]
+  # services must NOT have been stopped
+  ! grep -q "systemctl stop monad-bft" "$MOCK_LOG"
 }
 
 @test "leftover state file offers resume and exits cleanly when declined" {

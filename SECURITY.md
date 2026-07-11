@@ -1,26 +1,41 @@
 # Security
 
-## What this script does — and doesn't
+## What this script does, and what it doesn't
 
 `monad-failover.sh` runs as root on a Monad full node during a validator migration.
 It is a single auditable file with no dependencies beyond the Monad binaries and
 standard system tools. Concretely, it:
 
-- reads `/home/monad/.env` and your `secp-backup` / `bls-backup` files locally
+- reads `KEYSTORE_PASSWORD` from `/home/monad/.env` (by parsing the one line, not
+  by sourcing the file as code) and reads your `secp-backup` / `bls-backup` files
 - writes only under `/home/monad/monad-bft/config`, `/opt/monad/backup` and
   `/home/monad/.monad-failover` (resume state)
 - manages only the `monad-bft`, `monad-execution` and `monad-rpc` systemd units
-- makes exactly two kinds of outbound requests: `ifconfig.me` for public-IP
-  detection, and an optional SSH check to a host you name with `--peer-host`
+- makes one kind of outbound request: an HTTPS call to `ifconfig.me` to detect the
+  server's public IP
 
-It never transmits keys or secrets anywhere, never logs or echoes IKM values or
-the keystore password, and contains no telemetry.
+It contains no telemetry and never transmits your keys or password anywhere. Secret
+files it creates (key backups, resume state) are created with a `077` umask so they
+are never world-readable, and the keystore password is never written alongside the
+encrypted keystores.
+
+## One honest caveat: process arguments
+
+The Monad key tools take the password and IKM as command-line flags
+(`monad-keystore --password ... --ikm ...`). While those child processes run, their
+arguments are visible in `/proc/<pid>/cmdline` to any local user. This is a property
+of the Monad CLI, not something this script can avoid. On a validator you should
+already treat local access as full compromise, but if you want defence in depth,
+mount `/proc` with `hidepid=2` so process arguments are not readable across users.
+
+The script itself never echoes or logs the password or IKM: manual IKM entry is
+hidden (`read -s`), and IKM shell variables are cleared right after use.
 
 ## Verifying what you run
 
-- Compare `sha256sum monad-failover.sh` against the checksum in the README —
-  CI fails any change where the two drift apart.
-- Run `./monad-failover.sh --dry-run` first: it performs every preflight check
+- Compare `sha256sum monad-failover.sh` against the checksum in the README. CI
+  fails any change where the two drift apart.
+- Run `./monad-failover.sh --dry-run` first. It performs every preflight check
   read-only and changes nothing.
 - The script is short enough to read before running. Please do.
 
@@ -28,5 +43,5 @@ the keystore password, and contains no telemetry.
 
 Report vulnerabilities privately via
 [GitHub security advisories](https://github.com/s0urledd/monad-failover-tool/security/advisories/new)
-rather than public issues. Reports are acknowledged on a best-effort basis;
+rather than public issues. Reports are acknowledged on a best-effort basis, and
 key-handling issues are treated as top priority.
