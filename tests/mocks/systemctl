@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 # Mock systemctl: records calls; is-active always reports inactive so the
-# script's "services stopped" checks pass.
+# script's "services stopped" checks pass. `start` can be made to fail once
+# by pointing MOCK_FAIL_START at a sentinel file that exists.
 echo "systemctl $*" >> "${MOCK_LOG:-/dev/null}"
 case "${1:-}" in
   is-active) exit 3 ;;
-  *)         exit 0 ;;
+  start)
+    if [[ -n "${MOCK_FAIL_START:-}" && -f "$MOCK_FAIL_START" ]]; then
+      rm -f "$MOCK_FAIL_START"
+      echo "mock systemctl: start failed" >&2
+      exit 1
+    fi
+    exit 0 ;;
+  *) exit 0 ;;
 esac
