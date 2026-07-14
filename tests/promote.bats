@@ -11,6 +11,7 @@ BLS_IKM="2222222222222222222222222222222222222222222222222222222222222222"
 setup() {
   export MONAD_HOME="$BATS_TEST_TMPDIR/home/monad"
   export BACKUP_ROOT="$BATS_TEST_TMPDIR/opt/monad/backup"
+  export LOG_DIR="$BATS_TEST_TMPDIR/opt/monad/failover-logs"
   export MOCK_LOG="$BATS_TEST_TMPDIR/mock.log"
   export PATH="$REPO_ROOT/tests/mocks:$PATH"
   mkdir -p "$MONAD_HOME/monad-bft/config" "$BACKUP_ROOT"
@@ -130,11 +131,11 @@ EOF
   [ ! -f "$cfg/id-secp.new" ]
   [ ! -f "$cfg/id-bls.new" ]
 
-  # node.toml fully patched; seq must come from the SIGNER OUTPUT (mock echoes
-  # input+1, like the real tool): user enters 1 → script passes 2 → signer emits 3
+  # node.toml fully patched; seq flows argument → signer → output → node.toml:
+  # user enters 1 → script passes 2 → signer emits 2 → node.toml has 2
   grep -q '^beneficiary = "0xBEEF00000000000000000000000000000000BEEF"' "$cfg/node.toml"
   grep -q '^node_name = "validator-one"' "$cfg/node.toml"
-  grep -q '^self_record_seq_num = 3' "$cfg/node.toml"
+  grep -q '^self_record_seq_num = 2' "$cfg/node.toml"
   grep -q '^self_address = "203.0.113.7:8000"' "$cfg/node.toml"
   grep -q '^enable_publisher = true' "$cfg/node.toml"
   grep -q '^enable_client = true' "$cfg/node.toml"
@@ -161,6 +162,49 @@ EOF
 
   # resume state cleared after success
   [ ! -f "$MONAD_HOME/.monad-failover/state" ]
+
+  # the run was recorded to a log file
+  local logf
+  logf="$(find "$LOG_DIR" -name 'failover-*.log' | head -1)"
+  [ -n "$logf" ]
+  grep -q "VALIDATOR PROMOTION COMPLETE" "$logf"
+}
+
+@test "signer emitting a higher seq warns but completes (version drift)" {
+  make_healthy_env
+  export MOCK_SEQ_OFFSET=1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+1
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"this monad version increments it"* ]]
+  grep -q '^self_record_seq_num = 3' "$MONAD_HOME/monad-bft/config/node.toml"
+}
+
+@test "signer emitting a LOWER seq aborts before cutover (stale-seq guard)" {
+  make_healthy_env
+  export MOCK_SEQ_OFFSET=-1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+1
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"lower than the requested"* ]]
+  # nothing swapped: the full node's own key is untouched
+  grep -q "ikm=9999" "$MONAD_HOME/monad-bft/config/id-secp"
 }
 
 @test "cutover is refused unless the operator types STOPPED" {
