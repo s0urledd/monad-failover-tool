@@ -103,7 +103,7 @@ EOF
   make_healthy_env
 
   # answers: host ok / key source: backup files / dir: default /
-  # keys match / beneficiary / node_name / last seq / STOPPED confirm / cutover
+  # keys match / beneficiary / node_name / final seq / STOPPED confirm / cutover
   run bash "$SCRIPT" <<EOF
 y
 1
@@ -111,7 +111,7 @@ y
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-1
+2
 STOPPED
 y
 EOF
@@ -131,8 +131,8 @@ EOF
   [ ! -f "$cfg/id-secp.new" ]
   [ ! -f "$cfg/id-bls.new" ]
 
-  # node.toml fully patched; seq flows argument → signer → output → node.toml:
-  # user enters 1 → script passes 2 → signer emits 2 → node.toml has 2
+  # node.toml fully patched; seq flows verbatim: user enters the FINAL value 2
+  # → script passes 2 → signer emits 2 → node.toml has 2 (no math anywhere)
   grep -q '^beneficiary = "0xBEEF00000000000000000000000000000000BEEF"' "$cfg/node.toml"
   grep -q '^node_name = "validator-one"' "$cfg/node.toml"
   grep -q '^self_record_seq_num = 2' "$cfg/node.toml"
@@ -180,7 +180,7 @@ y
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-1
+2
 STOPPED
 y
 EOF
@@ -199,12 +199,27 @@ y
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-1
+2
 EOF
   [ "$status" -eq 1 ]
   [[ "$output" == *"lower than the requested"* ]]
   # nothing swapped: the full node's own key is untouched
   grep -q "ikm=9999" "$MONAD_HOME/monad-bft/config/id-secp"
+}
+
+@test "seq_num of zero or garbage is rejected" {
+  make_healthy_env
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+0
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Must be a positive number"* ]]
 }
 
 @test "cutover is refused unless the operator types STOPPED" {
