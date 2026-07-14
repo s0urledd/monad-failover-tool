@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.2.0"
+VERSION="1.2.1"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -290,21 +290,26 @@ sign_and_patch() {
 
   SELF_ADDRESS="$(echo "$sign_out" | grep '^self_address ' | cut -d '"' -f2 || true)"
   SELF_SIG="$(echo "$sign_out" | grep '^self_name_record_sig ' | cut -d '"' -f2 || true)"
+  # The signer (v0.14.5) may emit a seq_num different from the one passed in
+  # (observed: +1). The signature is bound to THAT value, so the signer output
+  # is the single source of truth for all three fields — never mix in $seq.
+  SELF_SEQ="$(echo "$sign_out" | grep '^self_record_seq_num ' | awk '{print $NF}' || true)"
 
-  [[ -n "$SELF_ADDRESS" ]] || die "Failed to parse self_address from signer output"
-  [[ -n "$SELF_SIG" ]]     || die "Failed to parse self_name_record_sig from signer output"
-  ok "Name record signed"
+  [[ -n "$SELF_ADDRESS" ]]      || die "Failed to parse self_address from signer output"
+  [[ -n "$SELF_SIG" ]]          || die "Failed to parse self_name_record_sig from signer output"
+  [[ "$SELF_SEQ" =~ ^[0-9]+$ ]] || die "Failed to parse self_record_seq_num from signer output"
+  ok "Name record signed (seq $SELF_SEQ)"
 
   step "PATCH node.toml"
   local esc_addr esc_sig
   esc_addr="$(sed_escape_replacement "$SELF_ADDRESS")"
   esc_sig="$(sed_escape_replacement "$SELF_SIG")"
   sed -i "s|^self_address.*|self_address = \"$esc_addr\"|" "$toml"
-  sed -i "s|^self_record_seq_num.*|self_record_seq_num = $seq|" "$toml"
+  sed -i "s|^self_record_seq_num.*|self_record_seq_num = $SELF_SEQ|" "$toml"
   sed -i "s|^self_name_record_sig.*|self_name_record_sig = \"$esc_sig\"|" "$toml"
 
-  grep -qF "self_address = \"$SELF_ADDRESS\"" "$toml" || die "Failed to write self_address"
-  grep -qF "self_record_seq_num = $seq" "$toml"        || die "Failed to write self_record_seq_num"
+  grep -qF "self_address = \"$SELF_ADDRESS\"" "$toml"      || die "Failed to write self_address"
+  grep -qF "self_record_seq_num = $SELF_SEQ" "$toml"       || die "Failed to write self_record_seq_num"
   fix_ownership
   ok "node.toml patched and verified"
 }
@@ -478,6 +483,7 @@ promote() {
       IP="$(load_state "ip")"
       SELF_ADDRESS="$(load_state "self_address")"
       SELF_SIG="$(load_state "self_sig")"
+      SELF_SEQ="$(load_state "self_seq")"
       BENEFICIARY="$(load_state "beneficiary")"
       BACKUP_DIR="$(load_state "backup_dir")"
     fi
@@ -642,6 +648,7 @@ promote() {
     save_state "ip" "$IP"
     save_state "self_address" "$SELF_ADDRESS"
     save_state "self_sig" "$SELF_SIG"
+    save_state "self_seq" "$SELF_SEQ"
     save_state "last_step" "6"
   fi
 
@@ -653,7 +660,7 @@ promote() {
     echo "  Hostname:    $(hostname)"
     echo "  Network:     $NETWORK"
     echo "  Address:     $SELF_ADDRESS"
-    echo "  seq_num:     $NEW_SEQ"
+    echo "  seq_num:     ${SELF_SEQ:-$NEW_SEQ}"
     echo "  Beneficiary: ${BENEFICIARY:-not set}"
     echo "  SECP key:    ${SECP_PUB:0:24}..."
     echo "  BLS  key:    ${BLS_PUB:0:24}..."

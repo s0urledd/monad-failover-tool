@@ -17,7 +17,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$ADDRESS" && -n "$SEQ" ]] || { echo "missing args" >&2; exit 1; }
+# Real monad-sign-name-record (v0.14.5) emits the seq incremented by one from
+# the value passed in; the signature is bound to the emitted value. Mirror that
+# so tests catch any caller that trusts its own seq instead of the output.
 sig="$(printf 'ab%.0s' $(seq 1 65))"
 echo "self_address = \"$ADDRESS\""
-echo "self_record_seq_num = $SEQ"
+echo "self_record_seq_num = $((SEQ + 1))"
 echo "self_name_record_sig = \"$sig\""

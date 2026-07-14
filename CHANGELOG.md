@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.1 — 2026-07-11
+
+### Fixed
+- **seq_num / signature mismatch.** `monad-sign-name-record` (v0.14.5) emits
+  `self_record_seq_num` incremented from the value passed in, and the signature
+  is bound to the emitted value. The script wrote its own computed seq into
+  `node.toml` while the signature belonged to the signer's seq, producing a
+  record peers cannot verify. All three fields (`self_address`,
+  `self_record_seq_num`, `self_name_record_sig`) are now parsed from the signer
+  output as the single source of truth; the promotion summary and resume state
+  carry the signer's value. The test mock now mirrors the real +1 behaviour so
+  this class of bug cannot reappear silently. Found during a live migration.
+
 ## 1.2.0 — 2026-07-11
 
 ### Added
