@@ -18,7 +18,7 @@ curl -sSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/main/m
 chmod +x monad-failover.sh
 
 sha256sum monad-failover.sh
-# 1767c04cc48d6e834c6bb078cfafb80fc8fb47812fc383efe8ca051b2a03325b
+# f6e143a82105016d550e0a390eeffab543275db6fc091899d8761a68ef57de04
 ```
 
 ## Usage
@@ -59,7 +59,9 @@ input).
    your validator (status, 24h uptime, finalized/timeout counts) right in the output.
 
 If the services fail to start after the swap, the run records the cutover as done so
-`--resume` never repeats it, and prints the exact commands to recover.
+`--resume` never repeats it, and prints the exact commands to recover. Every live run
+is also recorded to `/opt/monad/failover-logs/` (no secrets ever appear in the output),
+so you always have a log of what happened.
 
 ## Why trust a shell script with your validator keys?
 

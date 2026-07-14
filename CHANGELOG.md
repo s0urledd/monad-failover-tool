@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.3.0 — 2026-07-14
+
+### Fixed
+- **Root cause of the stale-seq ghost node, found in a live mainnet migration:**
+  `--node-config` made `monad-sign-name-record` read `self_record_seq_num` from
+  the current node.toml (stale on a fresh full node) and ignore the
+  `--self-record-seq-num` argument, signing a stale seq that peers reject.
+  The signer is now invoked without `--node-config`, exactly like the official
+  install-guide example: the seq comes from the argument, the pubkey from the
+  keystore. One seq source end to end (argument → signer output → node.toml).
+- New guard against signer version drift: if the emitted seq is LOWER than
+  requested the run aborts before anything is written; if higher (a
+  +1-incrementing version) it warns and continues, since the signature matches
+  the emitted value.
+
+### Added
+- **Run logs.** Every live run is recorded to
+  `/opt/monad/failover-logs/failover-<timestamp>.log` (dir mode 700). Output
+  never contains secrets, so the log is safe to keep; until now the operator's
+  only record of a migration was their terminal scrollback. Dry-run stays
+  fully read-only and is not logged.
+
+### Tests
+- The signer mock now rejects `--node-config` outright, signs exactly the seq
+  passed, and supports `MOCK_SEQ_OFFSET` to simulate version drift. New tests
+  cover the warn-and-continue and abort-on-lower guard paths plus log-file
+  creation (18 total).
+
 ## 1.2.1 — 2026-07-11
 
 ### Fixed
