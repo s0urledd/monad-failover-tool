@@ -18,7 +18,7 @@ curl -sSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/main/m
 chmod +x monad-failover.sh
 
 sha256sum monad-failover.sh
-# f6e143a82105016d550e0a390eeffab543275db6fc091899d8761a68ef57de04
+# a5899f520efb8d6d750fc515aa6ac2deec58aad68dca01a2185688df3e255a84
 ```
 
 ## Usage
@@ -50,7 +50,8 @@ input).
    shows the recovered public keys for confirmation. Live keys stay untouched until
    cutover.
 3. Sets `node_name`, `beneficiary` and the required flags, signs a new name record
-   with `self_record_seq_num` set to previous + 1, and patches `node.toml`.
+   with the `self_record_seq_num` you enter (the final value, used verbatim: last
+   was 7 → enter 8), and patches `node.toml`.
 4. Asks you to confirm the old validator is stopped (you type `STOPPED`), then cuts
    over: stops services, swaps the keys in, restarts as validator, and re-exports
    fresh backup files from the live keys.
@@ -84,8 +85,10 @@ Fair question. The mitigations, in the order they matter:
 - Never start the old machine again with the same keys. Two nodes signing with one
   identity is the one mistake you cannot undo, which is why cutover requires you to
   type `STOPPED` after confirming the old validator is down.
-- `self_record_seq_num` is monotonic and peers reject stale values. If you do not know
-  the last value, enter one you are sure is higher.
+- `self_record_seq_num` is monotonic and peers reject stale values. The number you
+  enter is used as-is; it lives in your records or on the old validator, not on the
+  new machine. If you do not know the last value, enter one you are sure is higher;
+  gaps are harmless.
 - The VDP requires validators to push metrics to Monad Foundation's monitoring
   infrastructure. Set that up on the new server after migrating
   ([docs](https://docs.monad.xyz/node-ops/validator-delegation-program)).
