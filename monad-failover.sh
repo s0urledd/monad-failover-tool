@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.2.1"
+VERSION="1.3.0"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -27,6 +27,7 @@ BLS_KEY="$CONFIG_DIR/id-bls"
 SECP_KEY_NEW="$CONFIG_DIR/id-secp.new"
 BLS_KEY_NEW="$CONFIG_DIR/id-bls.new"
 BACKUP_ROOT="${BACKUP_ROOT:-/opt/monad/backup}"
+LOG_DIR="${LOG_DIR:-/opt/monad/failover-logs}"
 MONAD_SERVICES=(monad-bft monad-execution monad-rpc)
 
 # ── ui helpers ─────────────────────────────────────────────
@@ -276,11 +277,15 @@ sign_and_patch() {
 
   sanitize_placeholders "$toml"
 
+  # No --node-config on purpose: with it, the signer reads the seq from the
+  # CURRENT node.toml (stale on a fresh full node) and ignores the argument,
+  # signing a stale seq — the exact failure seen in a live migration. Without
+  # it the signer takes the seq from the argument and the pubkey from the
+  # keystore, matching the official install-guide invocation. One seq source.
   step "SIGN NAME RECORD (seq $seq)"
   local sign_out
   if ! sign_out="$(monad-sign-name-record \
     --address "$ip:8000" \
-    --node-config "$toml" \
     --authenticated-udp-port 8001 \
     --self-record-seq-num "$seq" \
     --keystore-path "$keypath" \
@@ -288,16 +293,27 @@ sign_and_patch() {
     die "monad-sign-name-record failed"
   fi
 
+  # The signature is bound to the values the signer EMITS, so the output is
+  # the single source of truth for all three patched fields.
   SELF_ADDRESS="$(echo "$sign_out" | grep '^self_address ' | cut -d '"' -f2 || true)"
   SELF_SIG="$(echo "$sign_out" | grep '^self_name_record_sig ' | cut -d '"' -f2 || true)"
-  # The signer (v0.14.5) may emit a seq_num different from the one passed in
-  # (observed: +1). The signature is bound to THAT value, so the signer output
-  # is the single source of truth for all three fields — never mix in $seq.
   SELF_SEQ="$(echo "$sign_out" | grep '^self_record_seq_num ' | awk '{print $NF}' || true)"
 
   [[ -n "$SELF_ADDRESS" ]]      || die "Failed to parse self_address from signer output"
   [[ -n "$SELF_SIG" ]]          || die "Failed to parse self_name_record_sig from signer output"
   [[ "$SELF_SEQ" =~ ^[0-9]+$ ]] || die "Failed to parse self_record_seq_num from signer output"
+
+  # Guard against signer/version drift: emitting LESS than requested would
+  # re-create the stale-seq ghost-node failure — hard stop. Emitting more
+  # (a +1-style version) is monotonic-safe; warn and continue.
+  if [[ "$SELF_SEQ" -lt "$seq" ]]; then
+    die "Signer emitted seq $SELF_SEQ, lower than the requested $seq." \
+      "A stale seq would be rejected by peers. Check the monad version" \
+      "and re-run; nothing has been written."
+  elif [[ "$SELF_SEQ" -ne "$seq" ]]; then
+    warn "Signer emitted seq $SELF_SEQ (requested $seq) — this monad version increments it."
+    echo "  Safe to continue: the signature matches the emitted value."
+  fi
   ok "Name record signed (seq $SELF_SEQ)"
 
   step "PATCH node.toml"
@@ -455,10 +471,22 @@ start_monad_services() {
   ok "Services started"
 }
 
+# Record every live run to a log file. Secrets never appear in the output
+# (hidden input, no echo), so the log is safe to keep; it is the operator's
+# only record of what happened during a migration.
+start_logging() {
+  mkdir -p "$LOG_DIR"
+  chmod 700 "$LOG_DIR" 2>/dev/null || true
+  LOG_FILE="$LOG_DIR/failover-$(date +%Y%m%d-%H%M%S).log"
+  exec > >(tee -a "$LOG_FILE") 2>&1
+  echo "${DIM}(logging this run to $LOG_FILE)${RESET}"
+}
+
 # ══════════════════════════════════════════════════════════
 # PROMOTE — full node → validator
 # ══════════════════════════════════════════════════════════
 promote() {
+  start_logging
   header
 
   need_cmd curl; need_cmd systemctl; need_cmd sed
