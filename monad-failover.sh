@@ -651,12 +651,14 @@ promote() {
 
     bar
     echo "${BOLD}SEQ NUM${RESET}"
-    echo "Enter the last self_record_seq_num used by this validator identity"
-    echo "(from the old validator's node.toml, or your records; 0 if never migrated)."
-    read -r -p "seq_num: " LAST_SEQ
-    [[ "$LAST_SEQ" =~ ^[0-9]+$ ]] || die "Must be a number"
-    NEW_SEQ=$((LAST_SEQ + 1))
-    ok "New seq_num: $NEW_SEQ"
+    echo "Enter the self_record_seq_num to use for THIS migration — the final value,"
+    echo "no math is done on it. It must be higher than the last value this validator"
+    echo "identity ever used. That number is NOT on this machine: check your records"
+    echo "or the old validator's node.toml (last was 7 → enter 8; never migrated → 1)."
+    echo "Unsure? Enter a value you are certain is higher — gaps are harmless."
+    read -r -p "new seq_num: " NEW_SEQ
+    [[ "$NEW_SEQ" =~ ^[1-9][0-9]*$ ]] || die "Must be a positive number"
+    ok "seq_num for this migration: $NEW_SEQ"
 
     set_toml_value "$NODE_TOML" "enable_publisher" "true"  "fullnode_raptorcast"
     set_toml_value "$NODE_TOML" "enable_client"    "true"  "fullnode_raptorcast"

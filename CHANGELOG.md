@@ -15,6 +15,15 @@
   +1-incrementing version) it warns and continues, since the signature matches
   the emitted value.
 
+### Changed
+- **The seq prompt now asks for the final value, used verbatim.** Previously the
+  script asked for the "last used" seq and added 1 internally; combined with the
+  signer's own behaviour this stacked two layers of math on one number. Now you
+  enter exactly what gets signed and written (last was 7 → enter 8). No value is
+  read from or compared against the local node.toml: on a fresh full node that
+  history does not exist — the real last seq lives in your records or on the old
+  validator. Zero and non-numeric input are rejected.
+
 ### Added
 - **Run logs.** Every live run is recorded to
   `/opt/monad/failover-logs/failover-<timestamp>.log` (dir mode 700). Output
