@@ -130,10 +130,11 @@ EOF
   [ ! -f "$cfg/id-secp.new" ]
   [ ! -f "$cfg/id-bls.new" ]
 
-  # node.toml fully patched
+  # node.toml fully patched; seq must come from the SIGNER OUTPUT (mock echoes
+  # input+1, like the real tool): user enters 1 → script passes 2 → signer emits 3
   grep -q '^beneficiary = "0xBEEF00000000000000000000000000000000BEEF"' "$cfg/node.toml"
   grep -q '^node_name = "validator-one"' "$cfg/node.toml"
-  grep -q '^self_record_seq_num = 2' "$cfg/node.toml"
+  grep -q '^self_record_seq_num = 3' "$cfg/node.toml"
   grep -q '^self_address = "203.0.113.7:8000"' "$cfg/node.toml"
   grep -q '^enable_publisher = true' "$cfg/node.toml"
   grep -q '^enable_client = true' "$cfg/node.toml"
