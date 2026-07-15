@@ -93,9 +93,18 @@ two real signer behaviours which are now fixed and regression-locked in the test
 suite. If a future monad release changes the signer's output, the built-in drift
 guard stops the run before anything is written.
 
-![A full mainnet failover run](docs/mainnet-run.png)
+The full run, phase by phase (the actual mainnet migration, re-rendered in the
+current TUI):
 
-*The actual mainnet run, re-rendered in the current TUI.*
+![Preflight, host confirmation and config backup](docs/run-1.png)
+
+![Validator key import from backup files](docs/run-2.png)
+
+![Beneficiary, node name and seq_num configuration](docs/run-3.png)
+
+![Name record signing and cutover](docs/run-4.png)
+
+![Post-cutover verification and completion](docs/run-5.png)
 
 ## Notes
 
