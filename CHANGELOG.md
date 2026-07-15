@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.5.0 — 2026-07-15
+
+Hardening pass from an external review.
+
+- **Install is pinned to a release tag.** The README now downloads
+  `v<version>/monad-failover.sh` instead of mutable `main`, so what users fetch
+  never changes after the fact. CI gained a gate that fails if the README's
+  install URL stops matching the script's version.
+- **`--public-ip` flag** to set the name-record address explicitly instead of
+  auto-detecting via ifconfig.me (multi-homed hosts, or when the detector is
+  unreachable). IPv4 input is validated per octet, as is the detected address.
+- **Explicit root check** for live runs, with a clear message (dry-run stays
+  usable without root).
+- **Resume-state writes need no escaping**: rewrite-then-rename replaces the
+  sed edit, so unusual characters in paths or signatures cannot corrupt state.
+- README: dependency wording corrected (bash, curl, systemd and standard text
+  tools, not just coreutils) and a "Tested versions" section added
+  (Monad v0.14.5, live mainnet migration).
+
 ## 1.4.0 — 2026-07-15
 
 TUI restyle. The flow, prompts, ordering and messages are unchanged; only the
