@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.5.0"
+VERSION="1.5.1"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -898,7 +898,7 @@ mode_dry_run() {
   echo "  1. Back up this server's keys and config to $BACKUP_ROOT/failover-<timestamp>/"
   echo "  2. Import validator keys to staging files (id-secp.new / id-bls.new)"
   echo "  3. Set node_name, beneficiary, required config flags"
-  echo "  4. Sign name record (seq_num = previous + 1) and patch node.toml"
+  echo "  4. Sign name record with the seq_num you enter (used verbatim) and patch node.toml"
   echo "  5. After confirming the old validator is stopped: stop services,"
   echo "     swap keys into place, restart as validator"
   echo "  6. Re-export fresh key backups from the live keys"
