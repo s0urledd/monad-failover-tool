@@ -17,12 +17,14 @@ Pinned to a release tag, so what you download never changes after the fact:
 ```bash
 cd /home/monad
 curl -fsSLo monad-failover.sh \
-  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.5.1/monad-failover.sh
-chmod +x monad-failover.sh
+  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.6.0/monad-failover.sh
 
-sha256sum monad-failover.sh
-# cb5f5e78022a00ee81995c8da2929b71eb708840f32e0b2b582735bd6823c043
+echo "a0040ce901c68c8d1dff01aec3c1384e61005c7f07c78307098b87dbc54337ed  monad-failover.sh" | sha256sum -c -
+chmod +x monad-failover.sh
 ```
+
+`sha256sum -c` prints `monad-failover.sh: OK` and fails loudly on any mismatch,
+so there is nothing to eyeball.
 
 ## Usage
 
@@ -51,17 +53,18 @@ input).
 1. Verifies the node is in-sync and that you are on the right host, then backs up the
    full node's own identity to `/opt/monad/backup/failover-<timestamp>/`.
 2. Imports the validator keys into staging files (`id-secp.new` / `id-bls.new`) and
-   shows the recovered public keys for confirmation. Live keys stay untouched until
-   cutover.
+   shows the recovered public keys for confirmation.
 3. Sets `node_name`, `beneficiary` and the required flags, signs a new name record
    with the `self_record_seq_num` you enter (the final value, used verbatim: last
-   was 7 → enter 8), and patches `node.toml`.
+   was 7 → enter 8) — all on a staging copy, `node.toml.new`. **Nothing live changes
+   before cutover**: abort at any prompt and the full node is exactly as it was.
 4. Asks you to confirm the old validator is stopped (you type `STOPPED`), then cuts
-   over: stops services, swaps the keys in, restarts as validator, and re-exports
-   fresh backup files from the live keys.
-5. Verifies the result: local sync status, plus a query to the
-   [monval](https://monval.huginn.tech/) uptime API so you see how the network sees
-   your validator (status, 24h uptime, finalized/timeout counts) right in the output.
+   over: stops services, swaps keys and config into place, restarts as validator,
+   and re-exports fresh backup files from the live keys.
+5. Verifies the result: every service must actually be **active** after the restart
+   (a unit that crashes right after starting fails the run with recovery steps),
+   plus local sync status and a query to the [monval](https://monval.huginn.tech/)
+   uptime API so you see how the network sees your validator right in the output.
 
 If the services fail to start after the swap, the run records the cutover as done so
 `--resume` never repeats it, and prints the exact commands to recover. Every live run
