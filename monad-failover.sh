@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -96,11 +96,24 @@ load_keystore_password() {
   KEYSTORE_PASSWORD="$val"
 }
 
-# Detect the public IPv4 over HTTPS and validate it. Echoes the IP or nothing.
+valid_ipv4() {
+  local ip="$1" o
+  [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  for o in "${BASH_REMATCH[@]:1}"; do
+    (( 10#$o <= 255 )) || return 1
+  done
+}
+
+# The public IPv4: the --public-ip override if given, otherwise detected over
+# HTTPS and validated. Echoes the IP or nothing.
 public_ip() {
+  if [[ -n "${PUBLIC_IP:-}" ]]; then
+    printf '%s' "$PUBLIC_IP"
+    return
+  fi
   local ip
   ip="$(curl -fsS4 --connect-timeout 10 https://ifconfig.me 2>/dev/null || true)"
-  if [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+  if valid_ipv4 "$ip"; then
     printf '%s' "$ip"
   fi
 }
@@ -116,12 +129,13 @@ sed_escape_replacement() {
 STATE_DIR="$MONAD_HOME/.monad-failover"
 STATE_FILE="$STATE_DIR/state"
 
+# Rewrite-then-rename instead of sed: values (paths, signatures) need no
+# escaping this way, and the update is atomic.
 save_state() {
-  if grep -q "^${1}=" "$STATE_FILE" 2>/dev/null; then
-    sed -i "s|^${1}=.*|${1}=${2}|" "$STATE_FILE"
-  else
-    echo "${1}=${2}" >> "$STATE_FILE"
-  fi
+  local tmp="${STATE_FILE}.tmp"
+  grep -v "^${1}=" "$STATE_FILE" 2>/dev/null > "$tmp" || true
+  printf '%s=%s\n' "$1" "$2" >> "$tmp"
+  mv "$tmp" "$STATE_FILE"
 }
 
 load_state() {
@@ -913,6 +927,7 @@ usage() {
   echo "  --dry-run     Read-only preflight: run every check, change nothing"
   echo "  --backup-dir  Directory containing secp-backup / bls-backup key files"
   echo "                (skips the interactive key-source prompt)"
+  echo "  --public-ip   Use this IPv4 in the name record instead of auto-detection"
   echo "  --resume      Continue from the last completed step"
   echo "  --version     Print version and exit"
   exit 0
@@ -920,6 +935,7 @@ usage() {
 
 RESUME=false
 KEY_SOURCE_DIR=""
+PUBLIC_IP=""
 DRY_RUN=false
 
 while [[ $# -gt 0 ]]; do
@@ -927,6 +943,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run)    DRY_RUN=true ;;
     --resume)     RESUME=true ;;
     --backup-dir) shift; KEY_SOURCE_DIR="${1:-}"; [[ -n "$KEY_SOURCE_DIR" ]] || die "--backup-dir requires a value" ;;
+    --public-ip)  shift; PUBLIC_IP="${1:-}"; valid_ipv4 "$PUBLIC_IP" || die "--public-ip must be a valid IPv4 address" ;;
     --version)    echo "monad-failover v${VERSION}"; exit 0 ;;
     -h|--help|help) usage ;;
     *)            die "Unknown argument: $1. Run with --help for usage." ;;
@@ -939,6 +956,11 @@ if $DRY_RUN; then
   mode_dry_run
   exit 0
 fi
+
+# Live runs manage systemd services and root-owned key files.
+# (MF_ALLOW_NONROOT exists solely for the sandboxed test suite.)
+[[ $EUID -eq 0 || -n "${MF_ALLOW_NONROOT:-}" ]] \
+  || die "This script must run as root."
 
 mkdir -p "$STATE_DIR"
 
