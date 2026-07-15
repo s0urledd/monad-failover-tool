@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.5.1"
+VERSION="1.6.0"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -26,6 +26,7 @@ SECP_KEY="$CONFIG_DIR/id-secp"
 BLS_KEY="$CONFIG_DIR/id-bls"
 SECP_KEY_NEW="$CONFIG_DIR/id-secp.new"
 BLS_KEY_NEW="$CONFIG_DIR/id-bls.new"
+NODE_TOML_NEW="$CONFIG_DIR/node.toml.new"
 BACKUP_ROOT="${BACKUP_ROOT:-/opt/monad/backup}"
 LOG_DIR="${LOG_DIR:-/opt/monad/failover-logs}"
 MONAD_SERVICES=(monad-bft monad-execution monad-rpc)
@@ -286,11 +287,12 @@ set_toml_value() {
 }
 
 verify_config_flags() {
+  local toml="${1:-$NODE_TOML}"
   step "VERIFY CONFIG FLAGS"
   local missing=""
-  grep -q '^enable_publisher = true' "$NODE_TOML" || missing="${missing} enable_publisher"
-  grep -q '^enable_client = true' "$NODE_TOML"    || missing="${missing} enable_client"
-  grep -q '^expand_to_group = true' "$NODE_TOML"  || missing="${missing} expand_to_group"
+  grep -q '^enable_publisher = true' "$toml" || missing="${missing} enable_publisher"
+  grep -q '^enable_client = true' "$toml"    || missing="${missing} enable_client"
+  grep -q '^expand_to_group = true' "$toml"  || missing="${missing} expand_to_group"
 
   if [[ -n "$missing" ]]; then
     warn "Flags not set:${missing}"
@@ -417,9 +419,22 @@ refresh_key_backups() {
   fi
 }
 
+# Hard health gate after cutover: `systemctl start` returning success does
+# not mean the services survived their first seconds. Wait, then require
+# every unit to be active before the run may call itself complete.
+# (MF_HEALTH_WAIT exists solely so the test suite can skip the wait.)
 post_verify() {
   step "POST-CUTOVER VERIFICATION"
-  sleep 3
+  sleep "${MF_HEALTH_WAIT:-5}"
+  local svc
+  for svc in "${MONAD_SERVICES[@]}"; do
+    systemctl is-active --quiet "$svc" 2>/dev/null || die \
+      "$svc is not active after cutover." \
+      "Check:  journalctl -xeu $svc" \
+      "Start:  systemctl start ${MONAD_SERVICES[*]}" \
+      "Finish: ./monad-failover.sh --resume"
+  done
+  ok "All services active"
   if command -v monad-status >/dev/null 2>&1; then
     local out status
     out="$(monad-status 2>/dev/null || true)"
@@ -570,7 +585,7 @@ promote() {
 
   # ── 4. Import validator keys (staging — live keys untouched) ──
   if ! $RESUME || ! completed_step 4; then
-    rm -f "$SECP_KEY_NEW" "$BLS_KEY_NEW"
+    rm -f "$SECP_KEY_NEW" "$BLS_KEY_NEW" "$NODE_TOML_NEW"
 
     phase 4 "VALIDATOR KEY IMPORT"
     echo "  Keys are imported to staging files (id-secp.new / id-bls.new)."
@@ -645,9 +660,15 @@ promote() {
     save_state "last_step" "4"
   fi
 
-  # ── 5. Beneficiary + seq + config flags ──
+  # ── 5. Beneficiary + seq + config flags (all on a staging copy) ──
   if ! $RESUME || ! completed_step 5; then
     phase 5 "CONFIGURE VALIDATOR"
+    echo "  All changes go to a staging copy (node.toml.new)."
+    echo "  The live config is untouched until cutover."
+
+    # Like the keys: never touch the live node.toml before cutover. An abort
+    # at the STOPPED gate must leave a fully unmodified full node behind.
+    cp -a "$NODE_TOML" "$NODE_TOML_NEW"
 
     echo
     echo "${BOLD}BENEFICIARY${RESET}"
@@ -656,7 +677,7 @@ promote() {
     if [[ -n "$BENEFICIARY" ]]; then
       [[ "$BENEFICIARY" =~ ^0x[0-9a-fA-F]{40}$ ]] \
         || die "beneficiary must be a 0x-prefixed 40-hex-character address"
-      set_toml_value "$NODE_TOML" "beneficiary" "\"$BENEFICIARY\""
+      set_toml_value "$NODE_TOML_NEW" "beneficiary" "\"$BENEFICIARY\""
       ok "Beneficiary: $BENEFICIARY"
     else
       warn "No beneficiary entered — check node.toml manually after promotion."
@@ -670,7 +691,7 @@ promote() {
     if [[ -n "$NODE_NAME" ]]; then
       [[ "$NODE_NAME" =~ ^[A-Za-z0-9._-]{1,64}$ ]] \
         || die "node_name may contain only letters, digits, dot, dash, underscore (max 64)"
-      set_toml_value "$NODE_TOML" "node_name" "\"$NODE_NAME\""
+      set_toml_value "$NODE_TOML_NEW" "node_name" "\"$NODE_NAME\""
       ok "node_name: $NODE_NAME"
     else
       ok "node_name unchanged"
@@ -687,21 +708,24 @@ promote() {
     [[ "$NEW_SEQ" =~ ^[1-9][0-9]*$ ]] || die "Must be a positive number"
     ok "seq_num for this migration: $NEW_SEQ"
 
-    set_toml_value "$NODE_TOML" "enable_publisher" "true"  "fullnode_raptorcast"
-    set_toml_value "$NODE_TOML" "enable_client"    "true"  "fullnode_raptorcast"
-    set_toml_value "$NODE_TOML" "expand_to_group"  "true"  "statesync"
-    verify_config_flags
+    set_toml_value "$NODE_TOML_NEW" "enable_publisher" "true"  "fullnode_raptorcast"
+    set_toml_value "$NODE_TOML_NEW" "enable_client"    "true"  "fullnode_raptorcast"
+    set_toml_value "$NODE_TOML_NEW" "expand_to_group"  "true"  "statesync"
+    verify_config_flags "$NODE_TOML_NEW"
 
     save_state "beneficiary" "${BENEFICIARY:-}"
     save_state "new_seq" "$NEW_SEQ"
     save_state "last_step" "5"
   fi
 
-  # ── 6. Sign name record + patch (using staging key) ──
+  # ── 6. Sign name record + patch (staging key, staging config) ──
   if ! $RESUME || ! completed_step 6; then
     phase 6 "SIGN NAME RECORD"
+    [[ -f "$NODE_TOML_NEW" ]] || die \
+      "Staging config (node.toml.new) is missing." \
+      "Start a fresh run so the configure step re-creates it."
     detect_ip
-    sign_and_patch "$NODE_TOML" "$IP" "$NEW_SEQ" "$SECP_KEY_NEW"
+    sign_and_patch "$NODE_TOML_NEW" "$IP" "$NEW_SEQ" "$SECP_KEY_NEW"
 
     save_state "ip" "$IP"
     save_state "self_address" "$SELF_ADDRESS"
@@ -744,22 +768,28 @@ promote() {
     echo
     confirm_yn "proceed with cutover?" || die "Aborted."
 
-    # Both staging keys must exist before we touch services — never leave a
-    # half-swapped identity.
-    [[ -f "$SECP_KEY_NEW" && -f "$BLS_KEY_NEW" ]] || die \
-      "Staging keys are missing — refusing to stop services." \
-      "Start a fresh run so the key-import step re-creates them."
+    # All staging files must exist before we touch services — never leave a
+    # half-swapped identity or a key/config mismatch.
+    [[ -f "$SECP_KEY_NEW" && -f "$BLS_KEY_NEW" && -f "$NODE_TOML_NEW" ]] || die \
+      "Staging files are missing — refusing to stop services." \
+      "Start a fresh run so the import and configure steps re-create them."
 
     stop_monad_services
 
     mv -f "$SECP_KEY_NEW" "$SECP_KEY" || die \
-      "Could not place the SECP key. Services are stopped; keys are unchanged." \
+      "Could not place the SECP key. Services are stopped; nothing is changed." \
       "Fix the cause, then start a fresh run to re-stage the keys."
     if ! mv -f "$BLS_KEY_NEW" "$BLS_KEY"; then
       die "CRITICAL: the SECP key was placed but the BLS key was not." \
         "This node now has a mismatched identity. Do NOT start the services." \
         "Start a fresh run to re-stage both keys, or restore this node's" \
         "previous identity from: ${BACKUP_DIR:-$BACKUP_ROOT}"
+    fi
+    if ! mv -f "$NODE_TOML_NEW" "$NODE_TOML"; then
+      die "CRITICAL: the keys were placed but node.toml was not." \
+        "Do NOT start the services with this key/config mismatch." \
+        "Start a fresh run, or restore this node's previous identity" \
+        "from: ${BACKUP_DIR:-$BACKUP_ROOT}"
     fi
     fix_ownership
     systemctl enable "${MONAD_SERVICES[@]}" 2>/dev/null || true
@@ -790,7 +820,7 @@ promote() {
   fi
 
   # ── done ──
-  rm -f "$SECP_KEY_NEW" "$BLS_KEY_NEW" 2>/dev/null || true
+  rm -f "$SECP_KEY_NEW" "$BLS_KEY_NEW" "$NODE_TOML_NEW" 2>/dev/null || true
   clear_state
   echo
   echo "${GREEN}════════════════════════════════════════════════════════════${RESET}"
