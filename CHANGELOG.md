@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.6.0 — 2026-07-15
+
+Hardening pass, round two (external review follow-up).
+
+- **node.toml is now staged too.** Beneficiary, node_name, config flags and the
+  signed name record are all written to `node.toml.new`; the live config is
+  swapped in atomically at cutover together with the keys. Aborting at the
+  STOPPED gate (or anywhere before cutover) leaves the running full node
+  byte-for-byte unmodified — previously the live config was already mutated.
+- **Hard post-cutover health gate.** `systemctl start` returning success is not
+  trusted: after a short wait every service must report active, or the run
+  fails with recovery steps and keeps its resume state. A unit that crashes
+  right after starting can no longer produce a false
+  "VALIDATOR PROMOTION COMPLETE".
+- **Self-verifying install.** The README install now pipes the pinned hash
+  through `sha256sum -c`, which prints OK or fails loudly — no eyeballing.
+
+Tests: 22 total. New: abort-at-STOPPED leaves the live node untouched
+(keys AND config), crash-after-start is caught then resume completes, and the
+resume-after-start-failure path now asserts the health gate blocks resume
+until services are actually up.
+
 ## 1.5.1 — 2026-07-15
 
 - Battle-tested section in the README with a full render of the live mainnet
