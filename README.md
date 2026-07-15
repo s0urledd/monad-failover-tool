@@ -17,11 +17,11 @@ Pinned to a release tag, so what you download never changes after the fact:
 ```bash
 cd /home/monad
 curl -fsSLo monad-failover.sh \
-  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.5.0/monad-failover.sh
+  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.5.1/monad-failover.sh
 chmod +x monad-failover.sh
 
 sha256sum monad-failover.sh
-# 68bee720d47a558a5f1adbecbf981af0bd4b601b498e2c2a933b7cf45f1da2f1
+# cb5f5e78022a00ee81995c8da2929b71eb708840f32e0b2b582735bd6823c043
 ```
 
 ## Usage
@@ -85,12 +85,17 @@ Fair question. The mitigations, in the order they matter:
    API (post-cutover check, public key only). Secrets are never logged, and secret
    files are created `600`. See [SECURITY.md](SECURITY.md) for the full surface.
 
-## Tested versions
+## Battle-tested
 
-Proven in a live mainnet migration on **Monad v0.14.5** (July 2026), against the
-node-migration procedure as documented at that time. If a future monad release
-changes the signer's output, the built-in drift guard stops the run before
-anything is written.
+Proven in a live mainnet migration on **Monad v0.14.5** (July 2026): the Huginn
+validator was moved to a fresh full node with this script. That run also surfaced
+two real signer behaviours which are now fixed and regression-locked in the test
+suite. If a future monad release changes the signer's output, the built-in drift
+guard stops the run before anything is written.
+
+![A full mainnet failover run](docs/mainnet-run.png)
+
+*The actual mainnet run, re-rendered in the current TUI.*
 
 ## Notes
 
