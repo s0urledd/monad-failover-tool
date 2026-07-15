@@ -28,6 +28,12 @@ jobs:
           echo "script: $got"
           test "$want" = "$got"
 
+      - name: README install URL pins the current version
+        run: |
+          ver="$(grep -m1 '^VERSION=' monad-failover.sh | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+          echo "script version: $ver"
+          grep -q "monad-failover-tool/v${ver}/monad-failover.sh" README.md
+
       - name: Flags smoke test
         run: |
           bash monad-failover.sh --version
