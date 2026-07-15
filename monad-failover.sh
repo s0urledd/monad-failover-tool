@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.3.0"
+VERSION="1.3.1"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -699,15 +699,10 @@ promote() {
     bar
     warn "The old validator MUST be ${BOLD}stopped or fully offline${RESET} before cutover."
     echo "  Running two nodes with the same keys corrupts this validator's"
-    echo "  consensus participation and name record. This is the one step you"
-    echo "  cannot take back — get it right."
+    echo "  consensus participation and name record."
     echo
-    echo "  • If the old server is reachable, stop it now:"
+    echo "  If the old server is reachable, stop it now:"
     echo "      ${BOLD}systemctl stop monad-bft monad-execution monad-rpc${RESET}"
-    echo "    then confirm it is down:"
-    echo "      systemctl is-active monad-bft monad-execution monad-rpc   # expect: inactive"
-    echo "  • If the old server is dead or unreachable, make sure it cannot come"
-    echo "    back online with these keys (power it off at your provider)."
     echo
     echo "  Type ${BOLD}STOPPED${RESET} (in capitals) to confirm the old validator is down."
     read -r -p "  > " confirm_stopped
@@ -776,16 +771,11 @@ promote() {
 
   echo
   echo "${BOLD}NODE STATUS${RESET}"
-  echo "  systemctl status monad-bft monad-execution monad-rpc --no-pager -l"
-  echo "  journalctl -fu monad-bft"
-  command -v monad-status >/dev/null 2>&1 && echo "  monad-status"
+  echo "journalctl -fu monad-bft"
 
   echo
   echo "${BOLD}VALIDATOR EVENTS${RESET}"
-  echo "  Follow your validator's block activity live:"
-  echo "    journalctl -u monad-ledger-tail -o cat -f | grep -i \"${SECP_PUB}\""
-  echo "  Uptime API:"
-  echo "    curl $(validator_api_url)"
+  echo "journalctl -u monad-ledger-tail -o cat -f | grep -i \"${SECP_PUB}\""
 
   echo
   warn "If you have downstream full nodes, update this validator's"
