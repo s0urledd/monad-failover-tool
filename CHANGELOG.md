@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.4.0 — 2026-07-15
+
+TUI restyle. The flow, prompts, ordering and messages are unchanged; only the
+presentation is new.
+
+- Phase banners with a step counter (`━━ [4/8] VALIDATOR KEY IMPORT ━━…`) so
+  the operator always knows where they are and how much is left.
+- Compact header box with right-aligned version; boxed, column-aligned
+  PROMOTION SUMMARY; green double-rule completion banner.
+- Uniform `? label › ` input prompts; sub-steps use a lighter `▸` marker.
+- Closing-output cleanup: NODE STATUS is now just `journalctl -fu monad-bft`
+  and VALIDATOR EVENTS just the `monad-ledger-tail` grep, both unindented for
+  clean copy-paste. The pre-cutover warning block is shorter: one stop command,
+  no verification sub-steps.
+
 ## 1.3.0 — 2026-07-14
 
 ### Fixed
