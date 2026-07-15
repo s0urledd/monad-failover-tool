@@ -15,6 +15,7 @@ setup() {
   export MOCK_LOG="$BATS_TEST_TMPDIR/mock.log"
   export PATH="$REPO_ROOT/tests/mocks:$PATH"
   export MF_ALLOW_NONROOT=1
+  export MF_HEALTH_WAIT=0
   mkdir -p "$MONAD_HOME/monad-bft/config" "$BACKUP_ROOT"
   touch "$MOCK_LOG"
 }
@@ -246,7 +247,7 @@ EOF
   [[ "$output" == *"Must be a positive number"* ]]
 }
 
-@test "cutover is refused unless the operator types STOPPED" {
+@test "abort at STOPPED leaves the live node fully untouched" {
   make_healthy_env
   run bash "$SCRIPT" <<EOF
 y
@@ -255,13 +256,48 @@ y
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-1
+2
 yes
 EOF
   [ "$status" -eq 1 ]
   [[ "$output" == *"Not confirmed"* ]]
-  # nothing swapped: the full node's own key is untouched
-  grep -q "ikm=9999" "$MONAD_HOME/monad-bft/config/id-secp"
+
+  local cfg="$MONAD_HOME/monad-bft/config"
+  # live keys untouched
+  grep -q "ikm=9999" "$cfg/id-secp"
+  grep -q "ikm=8888" "$cfg/id-bls"
+  # live node.toml untouched: original name kept, validator values absent
+  grep -q '^node_name = "fullnode-one"' "$cfg/node.toml"
+  ! grep -q "0xBEEF00000000000000000000000000000000BEEF" "$cfg/node.toml"
+  ! grep -q '^enable_publisher = true' "$cfg/node.toml"
+  # all changes live only in the staging copy
+  grep -q '^node_name = "validator-one"' "$cfg/node.toml.new"
+}
+
+@test "service crashing right after start is caught, then resume completes" {
+  make_healthy_env
+  export MOCK_CRASH_AFTER_START=1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+2
+STOPPED
+y
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not active after cutover"* ]]
+  # cutover itself is done and recorded; state kept for --resume
+  grep -q "last_step=7" "$MONAD_HOME/.monad-failover/state"
+
+  unset MOCK_CRASH_AFTER_START
+  touch "$MOCK_LOG.active"   # operator fixed it; services are up again
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
 }
 
 @test "malformed beneficiary is rejected before any cutover" {
@@ -319,12 +355,20 @@ EOF
   [[ "$output" == *"failed to start"* ]]
 
   local cfg="$MONAD_HOME/monad-bft/config"
-  # keys already swapped; staging consumed; state advanced so resume won't re-swap
+  # keys AND config already swapped; staging consumed; state advanced
   grep -q "ikm=$SECP_IKM" "$cfg/id-secp"
+  grep -q '^node_name = "validator-one"' "$cfg/node.toml"
   [ ! -f "$cfg/id-secp.new" ]
+  [ ! -f "$cfg/node.toml.new" ]
   grep -q "last_step=7" "$MONAD_HOME/.monad-failover/state"
 
-  # Resume: services start fine now, bookkeeping finishes, state cleared.
+  # Resuming while services are still down must be refused by the health gate.
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not active after cutover"* ]]
+
+  # Operator starts the services (per the printed instructions), then resumes.
+  touch "$MOCK_LOG.active"
   run bash "$SCRIPT" --resume </dev/null
   [ "$status" -eq 0 ]
   [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
@@ -355,7 +399,7 @@ STOPPED
 y
 EOF
   [ "$status" -eq 1 ]
-  [[ "$output" == *"Staging keys are missing"* ]]
+  [[ "$output" == *"Staging files are missing"* ]]
   # services must NOT have been stopped
   ! grep -q "systemctl stop monad-bft" "$MOCK_LOG"
 }
