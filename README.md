@@ -12,13 +12,16 @@ keep copies off-server).
 
 ## Install
 
+Pinned to a release tag, so what you download never changes after the fact:
+
 ```bash
 cd /home/monad
-curl -sSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/main/monad-failover.sh
+curl -fsSLo monad-failover.sh \
+  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.5.0/monad-failover.sh
 chmod +x monad-failover.sh
 
 sha256sum monad-failover.sh
-# fc4712cb97e4e65a81727a3db01cb9a9b386cde4e2ba69308896722bf3db42bb
+# 68bee720d47a558a5f1adbecbf981af0bd4b601b498e2c2a933b7cf45f1da2f1
 ```
 
 ## Usage
@@ -35,6 +38,7 @@ dry run. It checks everything and changes nothing:
 |---|---|
 | `--dry-run` | run every preflight check read-only; touch nothing |
 | `--backup-dir PATH` | where `secp-backup` / `bls-backup` live; skips the key-source prompt |
+| `--public-ip IP` | use this IPv4 in the name record instead of auto-detecting via ifconfig.me |
 | `--resume` | pick up where a previous run left off |
 | `--version` | print version and exit |
 
@@ -68,8 +72,9 @@ so you always have a log of what happened.
 
 Fair question. The mitigations, in the order they matter:
 
-1. **One auditable file.** No dependencies to vet beyond the Monad binaries and
-   coreutils. Read it before you run it; it is short.
+1. **One auditable file.** Nothing to vet beyond the Monad binaries and the tools
+   every Ubuntu server already ships (bash, curl, systemd, grep/sed/awk/ss). Read
+   it before you run it; it is short.
 2. **Dry-run first.** `--dry-run` exercises every check without touching a file, key
    or service.
 3. **Checksum-pinned.** The README hash must match the script, and CI fails otherwise.
@@ -79,6 +84,13 @@ Fair question. The mitigations, in the order they matter:
    are HTTPS requests to `ifconfig.me` (public-IP detection) and the monval uptime
    API (post-cutover check, public key only). Secrets are never logged, and secret
    files are created `600`. See [SECURITY.md](SECURITY.md) for the full surface.
+
+## Tested versions
+
+Proven in a live mainnet migration on **Monad v0.14.5** (July 2026), against the
+node-migration procedure as documented at that time. If a future monad release
+changes the signer's output, the built-in drift guard stops the run before
+anything is written.
 
 ## Notes
 
