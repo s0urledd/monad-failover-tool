@@ -1,12 +1,20 @@
 # Changelog
 
+## 1.6.1 — 2026-07-15
+
+- Dry-run's planned-actions list updated to the staged-config flow (staging
+  copy of node.toml, staged swap at cutover, post-cutover health check).
+- Changelog wording made precise: the three staged files are swapped into
+  place during cutover with individually guarded renames; the set is not one
+  atomic operation.
+
 ## 1.6.0 — 2026-07-15
 
 Hardening pass, round two (external review follow-up).
 
 - **node.toml is now staged too.** Beneficiary, node_name, config flags and the
   signed name record are all written to `node.toml.new`; the live config is
-  swapped in atomically at cutover together with the keys. Aborting at the
+  swapped into place during cutover together with the keys. Aborting at the
   STOPPED gate (or anywhere before cutover) leaves the running full node
   byte-for-byte unmodified — previously the live config was already mutated.
 - **Hard post-cutover health gate.** `systemctl start` returning success is not
