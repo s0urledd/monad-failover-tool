@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.1 — 2026-07-14
+
+- Closing-output cleanup: NODE STATUS is now just `journalctl -fu monad-bft`
+  and VALIDATOR EVENTS just the `monad-ledger-tail` grep, both unindented for
+  clean copy-paste. The pre-cutover warning block is shorter: one stop command,
+  no verification sub-steps.
+
 ## 1.3.0 — 2026-07-14
 
 ### Fixed
