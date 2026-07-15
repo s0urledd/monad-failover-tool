@@ -14,6 +14,7 @@ setup() {
   export LOG_DIR="$BATS_TEST_TMPDIR/opt/monad/failover-logs"
   export MOCK_LOG="$BATS_TEST_TMPDIR/mock.log"
   export PATH="$REPO_ROOT/tests/mocks:$PATH"
+  export MF_ALLOW_NONROOT=1
   mkdir -p "$MONAD_HOME/monad-bft/config" "$BACKUP_ROOT"
   touch "$MOCK_LOG"
 }
@@ -205,6 +206,29 @@ EOF
   [[ "$output" == *"lower than the requested"* ]]
   # nothing swapped: the full node's own key is untouched
   grep -q "ikm=9999" "$MONAD_HOME/monad-bft/config/id-secp"
+}
+
+@test "--public-ip overrides detection end-to-end" {
+  make_healthy_env
+  run bash "$SCRIPT" --public-ip 198.51.100.9 <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+2
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  grep -q '^self_address = "198.51.100.9:8000"' "$MONAD_HOME/monad-bft/config/node.toml"
+}
+
+@test "invalid --public-ip is rejected" {
+  run bash "$SCRIPT" --public-ip 999.1.2.3
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"valid IPv4"* ]]
 }
 
 @test "seq_num of zero or garbage is rejected" {
