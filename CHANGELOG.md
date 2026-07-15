@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.1 — 2026-07-15
+
+- Battle-tested section in the README with a full render of the live mainnet
+  migration run (docs/mainnet-run.png).
+- Dry-run's planned-actions list updated to the current seq semantics (the
+  value you enter is used verbatim; the old "previous + 1" wording was stale).
+
 ## 1.5.0 — 2026-07-15
 
 Hardening pass from an external review.
