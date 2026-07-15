@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -37,18 +37,26 @@ RESET=$'\033[0m'
 
 header() {
   echo
-  echo "╔══════════════════════════════════════════════╗"
-  echo "║        MONAD VALIDATOR FAILOVER TOOL         ║"
-  echo "╚══════════════════════════════════════════════╝"
-  echo
-  echo "  Hostname: ${BOLD}$(hostname)${RESET}"
-  echo "  Date:     $(date '+%Y-%m-%d %H:%M:%S %Z')"
-  echo "  Version:  $VERSION"
-  echo
+  echo "┌───────────────────────────────────────────────────────────"
+  printf '│  %b%-44s%b%12s\n' "$BOLD" "MONAD VALIDATOR FAILOVER" "$RESET" "v$VERSION"
+  printf '│  %s · %s\n' "$(hostname)" "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+  echo "└───────────────────────────────────────────────────────────"
 }
 
-bar()      { echo "${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"; }
-step()     { echo; echo "${CYAN}▶${RESET} ${BOLD}$*${RESET}"; }
+# Full-width phase banner with a step counter, e.g. "━━ [4/8] KEY IMPORT ━━..."
+PHASES_TOTAL=8
+phase() {
+  local n="$1" title="$2"
+  local ascii="-- [${n}/${PHASES_TOTAL}] ${title} "
+  local fill=$(( 60 - ${#ascii} ))
+  echo
+  printf '%b━━ [%s/%s] %s ' "$CYAN" "$n" "$PHASES_TOTAL" "$title"
+  if (( fill > 0 )); then printf '━%.0s' $(seq 1 "$fill"); fi
+  printf '%b\n' "$RESET"
+}
+
+bar()      { echo "${DIM}──────────────────────────────────────────────${RESET}"; }
+step()     { echo; echo "${CYAN}▸${RESET} ${BOLD}$*${RESET}"; }
 ok()       { echo "${GREEN}✔${RESET} $*"; }
 warn()     { echo "${YELLOW}⚠${RESET} $*"; }
 die() {
@@ -61,9 +69,15 @@ die() {
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Missing command: $1"; }
 
 confirm_yn() {
-  local prompt="$1"
-  read -r -p "$prompt (y/N): " ans
+  local prompt="$1" ans
+  read -r -p "$(printf '  %b?%b %s (y/N) › ' "$CYAN" "$RESET" "$prompt")" ans
   case "${ans,,}" in y|yes) return 0 ;; *) return 1 ;; esac
+}
+
+# Styled input prompt: ask "label" VAR  →  "  ? label › "
+ask() {
+  local label="$1" __var="$2"
+  read -r -p "$(printf '  %b?%b %s › ' "$CYAN" "$RESET" "$label")" "${__var?}"
 }
 
 # Read KEYSTORE_PASSWORD from .env WITHOUT sourcing it. .env is owned by the
@@ -136,7 +150,7 @@ check_sync() {
     fi
   else
     warn "monad-status not installed — cannot verify sync"
-    confirm_yn "  Continue without sync check?" || die "Aborted."
+    confirm_yn "continue without sync check?" || die "Aborted."
   fi
 }
 
@@ -171,16 +185,16 @@ detect_network() {
 }
 
 run_location_guard() {
-  bar
+  echo
   warn "This will ${BOLD}promote this full node to validator${RESET}."
-  echo "  Hostname: ${BOLD}$(hostname)${RESET}"
+  echo "  Hostname:  ${BOLD}$(hostname)${RESET}"
 
   local ip
   ip="$(public_ip)"
   [[ -n "$ip" ]] && echo "  Public IP: ${BOLD}${ip}${RESET}"
 
   echo
-  confirm_yn "Is this the correct target host?" || die "Aborted."
+  confirm_yn "is this the correct target host?" || die "Aborted."
 }
 
 # ── key helpers ────────────────────────────────────────────
@@ -331,7 +345,6 @@ sign_and_patch() {
 }
 
 backup_config() {
-  step "BACKUP CURRENT CONFIG"
   local ts
   ts="$(date +%Y%m%d-%H%M%S)"
   BACKUP_DIR="$BACKUP_ROOT/failover-${ts}"
@@ -517,8 +530,9 @@ promote() {
     fi
   fi
 
-  # ── 1. Sync + RPC + colocated ──
+  # ── 1. Sync + RPC ──
   if ! $RESUME || ! completed_step 1; then
+    phase 1 "PREFLIGHT"
     check_sync
     check_rpc
     save_state "last_step" "1"
@@ -526,7 +540,7 @@ promote() {
 
   # ── 2. Network + location guard ──
   if ! $RESUME || ! completed_step 2; then
-    step "NETWORK & HOST CONFIRMATION"
+    phase 2 "NETWORK & HOST"
     detect_network
     run_location_guard
     save_state "network" "$NETWORK"
@@ -535,6 +549,7 @@ promote() {
 
   # ── 3. Backup this server's own identity ──
   if ! $RESUME || ! completed_step 3; then
+    phase 3 "BACKUP CURRENT CONFIG"
     backup_config
     save_state "last_step" "3"
   fi
@@ -543,8 +558,7 @@ promote() {
   if ! $RESUME || ! completed_step 4; then
     rm -f "$SECP_KEY_NEW" "$BLS_KEY_NEW"
 
-    bar
-    echo "${BOLD}VALIDATOR KEY IMPORT${RESET}"
+    phase 4 "VALIDATOR KEY IMPORT"
     echo "  Keys are imported to staging files (id-secp.new / id-bls.new)."
     echo "  Live keys remain untouched until cutover."
     echo
@@ -552,15 +566,14 @@ promote() {
     local SECP_IKM="" BLS_IKM=""
 
     if [[ -z "$KEY_SOURCE_DIR" ]]; then
-      echo "  How do you want to provide the validator keys?"
-      echo
       echo "    1) Key backup files (secp-backup / bls-backup) — ${GREEN}recommended${RESET}"
       echo "       Works even when the old server is unreachable."
       echo "    2) Paste IKM hex values manually (hidden input)"
       echo
-      read -r -p "  Select (1/2): " key_choice
+      local key_choice
+      ask "select (1/2)" key_choice
       case "$key_choice" in
-        1) read -r -p "  Backup directory [$BACKUP_ROOT]: " KEY_SOURCE_DIR
+        1) ask "backup directory [$BACKUP_ROOT]" KEY_SOURCE_DIR
            KEY_SOURCE_DIR="${KEY_SOURCE_DIR:-$BACKUP_ROOT}" ;;
         2) KEY_SOURCE_DIR="-" ;;
         *) die "Invalid selection" ;;
@@ -583,11 +596,11 @@ promote() {
         || die "Could not extract a valid BLS IKM from $bls_file"
       ok "IKM secrets extracted from backup files"
     else
-      echo "Paste the validator IKM hex values. Input is hidden."
+      echo "  Paste the validator IKM hex values. Input is hidden."
       echo
-      read -r -s -p "SECP IKM_HEX: " SECP_IKM; echo
+      read -r -s -p "$(printf '  %b?%b SECP IKM_HEX › ' "$CYAN" "$RESET")" SECP_IKM; echo
       SECP_IKM="$(validate_ikm "$SECP_IKM")" || die "SECP IKM must be 64 hex characters"
-      read -r -s -p "BLS  IKM_HEX: " BLS_IKM; echo
+      read -r -s -p "$(printf '  %b?%b BLS  IKM_HEX › ' "$CYAN" "$RESET")" BLS_IKM; echo
       BLS_IKM="$(validate_ikm "$BLS_IKM")" || die "BLS IKM must be 64 hex characters"
     fi
 
@@ -600,19 +613,17 @@ promote() {
     ok "BLS key imported to id-bls.new"
     SECP_IKM="" BLS_IKM=""
 
-    bar
-    echo "${BOLD}VERIFY KEYS${RESET}"
-
     SECP_PUB="$(recover_pubkey "$SECP_KEY_NEW" secp)"
     BLS_PUB="$(recover_pubkey "$BLS_KEY_NEW" bls)"
 
     [[ -n "$SECP_PUB" ]] || die "Could not recover SECP public key"
     [[ -n "$BLS_PUB" ]]  || die "Could not recover BLS public key"
 
-    echo "  SECP: ${SECP_PUB:0:46}..."
-    echo "  BLS:  ${BLS_PUB:0:46}..."
     echo
-    confirm_yn "Do these match your validator keys?" || die "Key mismatch — aborting."
+    echo "  SECP: ${BOLD}${SECP_PUB:0:46}...${RESET}"
+    echo "  BLS:  ${BOLD}${BLS_PUB:0:46}...${RESET}"
+    echo
+    confirm_yn "do these match your validator keys?" || die "Key mismatch — aborting."
     ok "Keys verified"
 
     save_state "secp_pub" "$SECP_PUB"
@@ -622,10 +633,12 @@ promote() {
 
   # ── 5. Beneficiary + seq + config flags ──
   if ! $RESUME || ! completed_step 5; then
-    bar
+    phase 5 "CONFIGURE VALIDATOR"
+
+    echo
     echo "${BOLD}BENEFICIARY${RESET}"
     echo "Enter the beneficiary address from the old validator's node.toml"
-    read -r -p "beneficiary: " BENEFICIARY
+    ask "beneficiary" BENEFICIARY
     if [[ -n "$BENEFICIARY" ]]; then
       [[ "$BENEFICIARY" =~ ^0x[0-9a-fA-F]{40}$ ]] \
         || die "beneficiary must be a 0x-prefixed 40-hex-character address"
@@ -635,11 +648,11 @@ promote() {
       warn "No beneficiary entered — check node.toml manually after promotion."
     fi
 
-    bar
+    echo
     echo "${BOLD}NODE NAME${RESET}"
     echo "Per the migration docs, this node should take over the old validator's"
     echo "node_name during migration. Leave empty to keep the current name."
-    read -r -p "node_name: " NODE_NAME
+    ask "node_name" NODE_NAME
     if [[ -n "$NODE_NAME" ]]; then
       [[ "$NODE_NAME" =~ ^[A-Za-z0-9._-]{1,64}$ ]] \
         || die "node_name may contain only letters, digits, dot, dash, underscore (max 64)"
@@ -649,14 +662,14 @@ promote() {
       ok "node_name unchanged"
     fi
 
-    bar
+    echo
     echo "${BOLD}SEQ NUM${RESET}"
     echo "Enter the self_record_seq_num to use for THIS migration — the final value,"
     echo "no math is done on it. It must be higher than the last value this validator"
     echo "identity ever used. That number is NOT on this machine: check your records"
     echo "or the old validator's node.toml (last was 7 → enter 8; never migrated → 1)."
     echo "Unsure? Enter a value you are certain is higher — gaps are harmless."
-    read -r -p "new seq_num: " NEW_SEQ
+    ask "new seq_num" NEW_SEQ
     [[ "$NEW_SEQ" =~ ^[1-9][0-9]*$ ]] || die "Must be a positive number"
     ok "seq_num for this migration: $NEW_SEQ"
 
@@ -672,6 +685,7 @@ promote() {
 
   # ── 6. Sign name record + patch (using staging key) ──
   if ! $RESUME || ! completed_step 6; then
+    phase 6 "SIGN NAME RECORD"
     detect_ip
     sign_and_patch "$NODE_TOML" "$IP" "$NEW_SEQ" "$SECP_KEY_NEW"
 
@@ -684,44 +698,38 @@ promote() {
 
   # ── 7. Confirm old validator stopped + cutover ──
   if ! $RESUME || ! completed_step 7; then
-    bar
-    echo "${BOLD}PROMOTION SUMMARY${RESET}"
+    phase 7 "CUTOVER"
     echo
-    echo "  Hostname:    $(hostname)"
-    echo "  Network:     $NETWORK"
-    echo "  Address:     $SELF_ADDRESS"
-    echo "  seq_num:     ${SELF_SEQ:-$NEW_SEQ}"
-    echo "  Beneficiary: ${BENEFICIARY:-not set}"
-    echo "  SECP key:    ${SECP_PUB:0:24}..."
-    echo "  BLS  key:    ${BLS_PUB:0:24}..."
+    echo "┌─ PROMOTION SUMMARY ────────────────────────────────────────"
+    printf '│  %-12s %s\n' "hostname"    "$(hostname)"
+    printf '│  %-12s %s\n' "network"     "$NETWORK"
+    printf '│  %-12s %s\n' "address"     "$SELF_ADDRESS"
+    printf '│  %-12s %s\n' "seq_num"     "${SELF_SEQ:-$NEW_SEQ}"
+    printf '│  %-12s %s\n' "beneficiary" "${BENEFICIARY:-not set}"
+    printf '│  %-12s %s\n' "secp"        "${SECP_PUB:0:24}..."
+    printf '│  %-12s %s\n' "bls"         "${BLS_PUB:0:24}..."
+    echo "└────────────────────────────────────────────────────────────"
     echo
 
-    bar
     warn "The old validator MUST be ${BOLD}stopped or fully offline${RESET} before cutover."
     echo "  Running two nodes with the same keys corrupts this validator's"
-    echo "  consensus participation and name record. This is the one step you"
-    echo "  cannot take back — get it right."
+    echo "  consensus participation and name record."
     echo
-    echo "  • If the old server is reachable, stop it now:"
+    echo "  If the old server is reachable, stop it now:"
     echo "      ${BOLD}systemctl stop monad-bft monad-execution monad-rpc${RESET}"
-    echo "    then confirm it is down:"
-    echo "      systemctl is-active monad-bft monad-execution monad-rpc   # expect: inactive"
-    echo "  • If the old server is dead or unreachable, make sure it cannot come"
-    echo "    back online with these keys (power it off at your provider)."
     echo
-    echo "  Type ${BOLD}STOPPED${RESET} (in capitals) to confirm the old validator is down."
-    read -r -p "  > " confirm_stopped
+    local confirm_stopped
+    ask "type STOPPED to confirm" confirm_stopped
     [[ "$confirm_stopped" == "STOPPED" ]] || die "Not confirmed — aborting before cutover."
     ok "Old validator confirmed stopped or offline"
 
-    bar
+    echo
     warn "${BOLD}POINT OF NO RETURN${RESET}"
     echo "  The next step stops services, swaps in the validator keys, and starts."
     echo "  After this the old validator MUST NOT be restarted with the same keys."
     echo
-    confirm_yn "Proceed with cutover?" || die "Aborted."
+    confirm_yn "proceed with cutover?" || die "Aborted."
 
-    step "CUTOVER"
     # Both staging keys must exist before we touch services — never leave a
     # half-swapped identity.
     [[ -f "$SECP_KEY_NEW" && -f "$BLS_KEY_NEW" ]] || die \
@@ -760,6 +768,7 @@ promote() {
 
   # ── 8. Verify + refresh key backups ──
   if ! $RESUME || ! completed_step 8; then
+    phase 8 "VERIFY"
     post_verify
     check_validator_api
     refresh_key_backups
@@ -770,22 +779,17 @@ promote() {
   rm -f "$SECP_KEY_NEW" "$BLS_KEY_NEW" 2>/dev/null || true
   clear_state
   echo
-  bar
-  ok "${BOLD}VALIDATOR PROMOTION COMPLETE${RESET}"
-  bar
+  echo "${GREEN}════════════════════════════════════════════════════════════${RESET}"
+  echo "   ${GREEN}✔${RESET}  ${BOLD}VALIDATOR PROMOTION COMPLETE${RESET}"
+  echo "${GREEN}════════════════════════════════════════════════════════════${RESET}"
 
   echo
   echo "${BOLD}NODE STATUS${RESET}"
-  echo "  systemctl status monad-bft monad-execution monad-rpc --no-pager -l"
-  echo "  journalctl -fu monad-bft"
-  command -v monad-status >/dev/null 2>&1 && echo "  monad-status"
+  echo "journalctl -fu monad-bft"
 
   echo
   echo "${BOLD}VALIDATOR EVENTS${RESET}"
-  echo "  Follow your validator's block activity live:"
-  echo "    journalctl -u monad-ledger-tail -o cat -f | grep -i \"${SECP_PUB}\""
-  echo "  Uptime API:"
-  echo "    curl $(validator_api_url)"
+  echo "journalctl -u monad-ledger-tail -o cat -f | grep -i \"${SECP_PUB}\""
 
   echo
   warn "If you have downstream full nodes, update this validator's"
