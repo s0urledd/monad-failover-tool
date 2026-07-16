@@ -17,9 +17,9 @@ Pinned to a release tag, so what you download never changes after the fact:
 ```bash
 cd /home/monad
 curl -fsSLo monad-failover.sh \
-  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.6.1/monad-failover.sh
+  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.7.0/monad-failover.sh
 
-echo "4b1761554d63d3c4297123fab79a956ccfa197e904774efb3d3a597eaee90ed3  monad-failover.sh" | sha256sum -c -
+echo "8d3fee0508a9139cc717e9fe60c89bb1a3c291a557448a3a903ef41fc531dfdb  monad-failover.sh" | sha256sum -c -
 chmod +x monad-failover.sh
 ```
 
@@ -66,10 +66,13 @@ input).
    plus local sync status and a query to the [monval](https://monval.huginn.tech/)
    uptime API so you see how the network sees your validator right in the output.
 
-If the services fail to start after the swap, the run records the cutover as done so
-`--resume` never repeats it, and prints the exact commands to recover. Every live run
-is also recorded to `/opt/monad/failover-logs/` (no secrets ever appear in the output),
-so you always have a log of what happened.
+The cutover itself is resumable: before anything moves, the checksums of the staged
+files are recorded, so if a rename fails or the machine dies mid-swap, `--resume`
+recognizes what already made it into place and finishes only the rest. It never
+repeats a completed swap, and once a cutover has begun a fresh run is refused until
+the interrupted one is finished. Every live run is also recorded to
+`/opt/monad/failover-logs/` (no secrets ever appear in the output), so you always
+have a log of what happened.
 
 ## Why trust a shell script with your validator keys?
 

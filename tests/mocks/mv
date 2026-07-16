@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Mock mv: transparent passthrough to /bin/mv, except it fails ONCE when the
+# destination (last argument) equals MOCK_FAIL_MV_DEST and the one-shot flag
+# file MOCK_FAIL_MV_FLAG exists; the flag is consumed by the failure. Lets
+# tests simulate a single rename failing mid-cutover.
+if [[ $# -gt 0 && -n "${MOCK_FAIL_MV_DEST:-}" && -f "${MOCK_FAIL_MV_FLAG:-/nonexistent}" ]]; then
+  dest="${!#}"
+  if [[ "$dest" == "$MOCK_FAIL_MV_DEST" ]]; then
+    rm -f "$MOCK_FAIL_MV_FLAG"
+    echo "mock mv: simulated failure moving to $dest" >&2
+    exit 1
+  fi
+fi
+exec /bin/mv "$@"
