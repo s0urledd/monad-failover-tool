@@ -1,5 +1,55 @@
 # Changelog
 
+## 1.7.0 — 2026-07-16
+
+Fixes from an independent re-audit of 1.6.1 (two adversarial passes: security
+and correctness). No key-loss path existed before or after; all changes are
+about failure-path recovery and log hygiene.
+
+### Fixed
+- **An interrupted cutover is now always resumable.** Previously, any failure
+  after services were stopped (a rename failing mid-swap, or a crash between
+  the swap and the service start) wedged the operator: `--resume` refused
+  because a staging file was consumed, while a fresh run could not pass the
+  sync check with services down — and the printed advice pointed in circles.
+  Now the checksums of the staged files are recorded before anything moves;
+  on a re-run, a missing staging file is accepted exactly when the live file
+  matches what was staged, so `--resume` finishes only the remaining part of
+  the swap. The swap is recorded as complete before services are started,
+  and every cutover failure message now points at `--resume`.
+- **A fresh run is refused while an interrupted cutover exists.** Starting
+  fresh after a partial swap would have re-snapshotted a possibly mixed
+  identity as "this server's previous identity" and pointed later recovery
+  messages at that corrupted backup. Once cutover begins the run is marked,
+  and until it is finished (or the operator deliberately deletes the state
+  file after a manual restore) only `--resume` is accepted.
+- **A failed key-backup export no longer discards the resume state.** The
+  export failure message said "re-run with --resume", but the run then
+  completed and cleared its state, so `--resume` would have started a full
+  fresh promotion against the live validator — with the default key source
+  already renamed to `.bak`. The run now fails with the state kept at the
+  cutover step, so `--resume` re-checks health and retries only the export.
+- **Secret-bearing key-tool output can no longer reach the run log.** The
+  run log (added in 1.3.0) captures stderr, and two of the four key-tool
+  calls that carry the IKM or keystore password on their command line did
+  not suppress their output; a CLI error path echoing its arguments would
+  have persisted a secret to disk. Both now suppress output, matching the
+  other two calls, and their failure messages say so explicitly.
+- `.env` files saved with CRLF line endings no longer produce a corrupted
+  keystore password (the trailing carriage return defeated quote-stripping).
+- If `ss` is not installed, the RPC exposure check now says it cannot check
+  instead of printing a false "not exposed" all-clear. `sha256sum` joined the
+  required-commands preflight (it verifies placed files during resume).
+
+### Tests
+- The mock `monad-status` now reports in-sync only while the mock services
+  are running, like real hardware — this fidelity gap is what had hidden the
+  wedge above from the suite. New mocks let a single rename or a single key
+  export fail on demand. Five new tests: partial cutover resumed to
+  completion, crash-after-swap-before-start resumed, fresh run refused after
+  an interrupted cutover, failed backup export retried via resume, and CRLF
+  `.env` parsing (27 total).
+
 ## 1.6.1 — 2026-07-15
 
 - Dry-run's planned-actions list updated to the staged-config flow (staging
