@@ -31,7 +31,10 @@ already treat local access as full compromise, but if you want defence in depth,
 mount `/proc` with `hidepid=2` so process arguments are not readable across users.
 
 The script itself never echoes or logs the password or IKM: manual IKM entry is
-hidden (`read -s`), and IKM shell variables are cleared right after use.
+hidden (`read -s`), IKM shell variables are cleared right after use, and the
+output of every key-tool invocation that carries a secret on its command line is
+suppressed, so even an error path that echoed its arguments could not land in
+the run log.
 
 ## Verifying what you run
 

@@ -26,6 +26,10 @@ make_healthy_env() {
   cp "$REPO_ROOT/tests/fixtures/node.toml" "$MONAD_HOME/monad-bft/config/node.toml"
   echo "KEYSTORE_PASSWORD='testpass'" > "$MONAD_HOME/.env"
 
+  # services are running, as on a real synced full node (the monad-status
+  # mock reports in-sync only while this marker exists)
+  touch "$MOCK_LOG.active"
+
   # the full node's own (pre-existing) keys
   monad-keystore import --ikm "9999999999999999999999999999999999999999999999999999999999999999" \
     --keystore-path "$MONAD_HOME/monad-bft/config/id-secp" --password "testpass"
@@ -421,6 +425,155 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
   [[ "$output" == *"not visible in the uptime API yet"* ]]
+}
+
+@test "partial cutover (BLS rename fails) is resumable to completion" {
+  make_healthy_env
+  export MOCK_FAIL_MV_DEST="$MONAD_HOME/monad-bft/config/id-bls"
+  export MOCK_FAIL_MV_FLAG="$BATS_TEST_TMPDIR/failmv"
+  touch "$MOCK_FAIL_MV_FLAG"
+
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+2
+STOPPED
+y
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"SECP key was placed but the BLS key was not"* ]]
+  [[ "$output" == *"--resume"* ]]
+
+  local cfg="$MONAD_HOME/monad-bft/config"
+  # secp already swapped, bls still the old full-node key, its staging intact
+  grep -q "ikm=$SECP_IKM" "$cfg/id-secp"
+  grep -q "ikm=8888" "$cfg/id-bls"
+  [ -f "$cfg/id-bls.new" ]
+  grep -q "last_step=6" "$MONAD_HOME/.monad-failover/state"
+
+  # --resume finishes the interrupted cutover: the placed secp is recognized
+  # by its recorded checksum, the remaining files are moved, services start.
+  run bash "$SCRIPT" --resume <<EOF
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already in place from a previous cutover attempt"* ]]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  grep -q "ikm=$BLS_IKM" "$cfg/id-bls"
+  grep -q '^node_name = "validator-one"' "$cfg/node.toml"
+  [ ! -f "$MONAD_HOME/.monad-failover/state" ]
+}
+
+@test "crash after full swap but before start: resume recognizes placed files" {
+  make_healthy_env
+  local cfg="$MONAD_HOME/monad-bft/config"
+
+  # Simulate: cutover swapped all three files, then the machine died before
+  # the swap could be recorded — worst case, last_step still 6, staging gone.
+  monad-keystore import --ikm "$SECP_IKM" --keystore-path "$cfg/id-secp" --password "testpass"
+  monad-keystore import --ikm "$BLS_IKM" --keystore-path "$cfg/id-bls" --password "testpass"
+  rm -f "$MOCK_LOG.active"   # services were stopped for the cutover
+
+  mkdir -p "$MONAD_HOME/.monad-failover"
+  cat > "$MONAD_HOME/.monad-failover/state" <<EOF
+last_step=6
+cutover_started=1
+network=testnet
+new_seq=2
+secp_pub=0xSECP${SECP_IKM:0:40}
+bls_pub=0xBLS${BLS_IKM:0:40}
+ip=203.0.113.7
+self_address=203.0.113.7:8000
+self_sig=abcd
+self_seq=2
+beneficiary=0xBEEF00000000000000000000000000000000BEEF
+backup_dir=$BACKUP_ROOT/failover-x
+staged_secp_sha=$(sha256sum "$cfg/id-secp" | awk '{print $1}')
+staged_bls_sha=$(sha256sum "$cfg/id-bls" | awk '{print $1}')
+staged_toml_sha=$(sha256sum "$cfg/node.toml" | awk '{print $1}')
+EOF
+
+  run bash "$SCRIPT" --resume <<EOF
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already in place from a previous cutover attempt"* ]]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  grep -q "systemctl start monad-bft" "$MOCK_LOG"
+  [ ! -f "$MONAD_HOME/.monad-failover/state" ]
+}
+
+@test "fresh run is refused while an interrupted cutover exists" {
+  make_healthy_env
+  mkdir -p "$MONAD_HOME/.monad-failover"
+  cat > "$MONAD_HOME/.monad-failover/state" <<EOF
+last_step=6
+cutover_started=1
+EOF
+  run bash "$SCRIPT" </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"reached cutover"* ]]
+  [[ "$output" == *"--resume"* ]]
+  # the state must survive: it is the only map of how far the cutover got
+  grep -q "cutover_started=1" "$MONAD_HOME/.monad-failover/state"
+}
+
+@test "failed key backup export keeps resume state; resume retries only the export" {
+  make_healthy_env
+  export MOCK_FAIL_RECOVER_PATH="$MONAD_HOME/monad-bft/config/id-secp"
+
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+2
+STOPPED
+y
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Key backup export failed"* ]]
+  [[ "$output" == *"--resume"* ]]
+  # the promotion itself happened; state kept at 7 so --resume lands in step 8
+  grep -q "last_step=7" "$MONAD_HOME/.monad-failover/state"
+  # the old backup was preserved, no truncated replacement left behind
+  ls "$BACKUP_ROOT"/secp-backup.*.bak >/dev/null
+  [ ! -f "$BACKUP_ROOT/secp-backup" ]
+
+  unset MOCK_FAIL_RECOVER_PATH
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  grep -q "Keystore secret: $SECP_IKM" "$BACKUP_ROOT/secp-backup"
+  [ ! -f "$MONAD_HOME/.monad-failover/state" ]
+}
+
+@test ".env with CRLF line endings still yields the exact password" {
+  make_healthy_env
+  printf "KEYSTORE_PASSWORD='testpass'\r\n" > "$MONAD_HOME/.env"
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+2
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  # quotes stripped AND no trailing carriage return in the stored password
+  grep -q "pw=testpass\$" "$MONAD_HOME/monad-bft/config/id-secp"
 }
 
 @test "leftover state file offers resume and exits cleanly when declined" {
