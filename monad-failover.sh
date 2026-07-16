@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.6.1"
+VERSION="1.7.0"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -89,6 +89,9 @@ load_keystore_password() {
   line="$(grep -m1 '^KEYSTORE_PASSWORD=' "$ENV_FILE" 2>/dev/null || true)"
   [[ -n "$line" ]] || return 1
   val="${line#KEYSTORE_PASSWORD=}"
+  # A .env saved with CRLF endings carries a trailing \r that would defeat
+  # the quote-strip below and end up inside the password. Drop it first.
+  val="${val%$'\r'}"
   if [[ "$val" == \'*\' ]]; then
     val="${val#\'}"; val="${val%\'}"
   elif [[ "$val" == \"*\" ]]; then
@@ -174,6 +177,11 @@ RPC_PORTS=(8080 8081 8545 8546 9545 9546 18545 18546)
 
 check_rpc() {
   step "RPC EXPOSURE CHECK"
+  if ! command -v ss >/dev/null 2>&1; then
+    warn "ss not found — cannot check RPC exposure."
+    echo "  Verify manually that none of these ports listen publicly: ${RPC_PORTS[*]}"
+    return 0
+  fi
   local listeners exposed=()
   listeners="$(ss -ltn 2>/dev/null | awk '{print $4}' || true)"
   for port in "${RPC_PORTS[@]}"; do
@@ -238,10 +246,16 @@ extract_ikm_from_backup() {
 
 import_staged_key() {
   local ikm="$1" keypath="$2"
+  # Output is dropped on purpose: every live run is recorded to a log file,
+  # and a CLI error path that echoes its arguments would persist the IKM or
+  # the keystore password to disk. Same handling as recover/export.
   monad-keystore import \
     --ikm "$ikm" \
     --keystore-path "$keypath" \
-    --password "$KEYSTORE_PASSWORD"
+    --password "$KEYSTORE_PASSWORD" >/dev/null 2>&1 \
+    || die "monad-keystore import failed for $keypath." \
+           "(Its output is suppressed so secrets can never reach the run log.)" \
+           "Check the keystore password in $ENV_FILE and the IKM source, then re-run."
   chown monad:monad "$keypath" 2>/dev/null || true
   chmod 600 "$keypath" 2>/dev/null || true
 }
@@ -313,14 +327,19 @@ sign_and_patch() {
   # it the signer takes the seq from the argument and the pubkey from the
   # keystore, matching the official install-guide invocation. One seq source.
   step "SIGN NAME RECORD (seq $seq)"
+  # stderr is dropped for the same reason as in import_staged_key: this call
+  # carries the keystore password on argv, and an error path echoing it would
+  # persist the secret to the run log.
   local sign_out
   if ! sign_out="$(monad-sign-name-record \
     --address "$ip:8000" \
     --authenticated-udp-port 8001 \
     --self-record-seq-num "$seq" \
     --keystore-path "$keypath" \
-    --password "$KEYSTORE_PASSWORD")"; then
-    die "monad-sign-name-record failed"
+    --password "$KEYSTORE_PASSWORD" 2>/dev/null)"; then
+    die "monad-sign-name-record failed." \
+      "(Its error output is suppressed so secrets can never reach the run log.)" \
+      "Check the keystore password in $ENV_FILE and the monad version, then re-run."
   fi
 
   # The signature is bound to the values the signer EMITS, so the output is
@@ -397,6 +416,8 @@ export_key_backup() {
 
 # Re-export official-format key backups from the live validator keys
 # (same format and paths as the full node installation guide).
+# Returns nonzero on export failure so the caller keeps the resume state —
+# otherwise the printed --resume advice would find nothing to resume.
 refresh_key_backups() {
   step "REFRESH KEY BACKUPS"
   mkdir -p "$BACKUP_ROOT"
@@ -415,7 +436,7 @@ refresh_key_backups() {
   else
     warn "Could not re-export key backups."
     echo "  Previous copies are preserved as *.${ts}.bak in $BACKUP_ROOT."
-    echo "  Re-run later with: ./monad-failover.sh --resume"
+    return 1
   fi
 }
 
@@ -493,6 +514,32 @@ detect_ip() {
   ok "Public IP: $IP"
 }
 
+# ── cutover helpers ────────────────────────────────────────
+file_sha() { sha256sum "$1" 2>/dev/null | awk '{print $1}' || true; }
+
+# True if this staged file can be placed: it either still exists, or a
+# previous cutover attempt already moved it into place (the live file matches
+# the checksum recorded just before that attempt). This is what lets --resume
+# finish an interrupted cutover instead of wedging on a consumed staging file.
+staged_ready() {
+  local staged="$1" live="$2" state_key="$3"
+  [[ -f "$staged" ]] && return 0
+  local want
+  want="$(load_state "$state_key")"
+  [[ -n "$want" && "$(file_sha "$live")" == "$want" ]]
+}
+
+# Move a staged file into place; a no-op if a previous attempt already did
+# (staged_ready has verified the live file's checksum before services stopped).
+place_staged() {
+  local staged="$1" live="$2" label="$3"
+  if [[ -f "$staged" ]]; then
+    mv -f "$staged" "$live"
+  else
+    ok "$label already in place from a previous cutover attempt"
+  fi
+}
+
 stop_monad_services() {
   step "STOP MONAD SERVICES"
   systemctl stop "${MONAD_SERVICES[@]}" 2>/dev/null || true
@@ -531,7 +578,7 @@ promote() {
   start_logging
   header
 
-  need_cmd curl; need_cmd systemctl; need_cmd sed
+  need_cmd curl; need_cmd systemctl; need_cmd sed; need_cmd sha256sum
   need_cmd monad-keystore; need_cmd monad-sign-name-record
   [[ -f "$NODE_TOML" ]] || die "node.toml not found: $NODE_TOML"
   [[ -f "$ENV_FILE" ]]  || die ".env not found: $ENV_FILE"
@@ -768,37 +815,56 @@ promote() {
     echo
     confirm_yn "proceed with cutover?" || die "Aborted."
 
-    # All staging files must exist before we touch services — never leave a
-    # half-swapped identity or a key/config mismatch.
-    [[ -f "$SECP_KEY_NEW" && -f "$BLS_KEY_NEW" && -f "$NODE_TOML_NEW" ]] || die \
-      "Staging files are missing — refusing to stop services." \
-      "Start a fresh run so the import and configure steps re-create them."
+    # Record checksums of what is about to be placed. If this cutover is
+    # interrupted mid-swap, a re-run uses these to recognize the files that
+    # already made it into place and only moves the rest — --resume can always
+    # finish an interrupted cutover.
+    [[ -f "$SECP_KEY_NEW"  ]] && save_state "staged_secp_sha" "$(file_sha "$SECP_KEY_NEW")"
+    [[ -f "$BLS_KEY_NEW"   ]] && save_state "staged_bls_sha"  "$(file_sha "$BLS_KEY_NEW")"
+    [[ -f "$NODE_TOML_NEW" ]] && save_state "staged_toml_sha" "$(file_sha "$NODE_TOML_NEW")"
+
+    # Every staging file must be present, or verifiably already placed by a
+    # previous attempt, before we touch services — never leave a half-swapped
+    # identity or a key/config mismatch.
+    if ! { staged_ready "$SECP_KEY_NEW" "$SECP_KEY" staged_secp_sha \
+        && staged_ready "$BLS_KEY_NEW" "$BLS_KEY" staged_bls_sha \
+        && staged_ready "$NODE_TOML_NEW" "$NODE_TOML" staged_toml_sha; }; then
+      die "Staging files are missing — refusing to stop services." \
+        "Start a fresh run so the import and configure steps re-create them."
+    fi
+
+    # From here on the run mutates the live node: mark it, so a later run
+    # without --resume refuses to start fresh over a half-swapped identity.
+    save_state "cutover_started" "1"
 
     stop_monad_services
 
-    mv -f "$SECP_KEY_NEW" "$SECP_KEY" || die \
-      "Could not place the SECP key. Services are stopped; nothing is changed." \
-      "Fix the cause, then start a fresh run to re-stage the keys."
-    if ! mv -f "$BLS_KEY_NEW" "$BLS_KEY"; then
+    place_staged "$SECP_KEY_NEW" "$SECP_KEY" "SECP key" || die \
+      "Could not place the SECP key. Services are stopped; nothing has changed." \
+      "Fix the cause, then continue with: ./monad-failover.sh --resume"
+    if ! place_staged "$BLS_KEY_NEW" "$BLS_KEY" "BLS key"; then
       die "CRITICAL: the SECP key was placed but the BLS key was not." \
         "This node now has a mismatched identity. Do NOT start the services." \
-        "Start a fresh run to re-stage both keys, or restore this node's" \
-        "previous identity from: ${BACKUP_DIR:-$BACKUP_ROOT}"
+        "Fix the cause, then continue with: ./monad-failover.sh --resume" \
+        "(it finishes placing the remaining files). To roll back instead," \
+        "restore this node's previous identity from: ${BACKUP_DIR:-$BACKUP_ROOT}"
     fi
-    if ! mv -f "$NODE_TOML_NEW" "$NODE_TOML"; then
+    if ! place_staged "$NODE_TOML_NEW" "$NODE_TOML" "node.toml"; then
       die "CRITICAL: the keys were placed but node.toml was not." \
         "Do NOT start the services with this key/config mismatch." \
-        "Start a fresh run, or restore this node's previous identity" \
-        "from: ${BACKUP_DIR:-$BACKUP_ROOT}"
+        "Fix the cause, then continue with: ./monad-failover.sh --resume" \
+        "(it finishes placing node.toml). To roll back instead, restore" \
+        "this node's previous identity from: ${BACKUP_DIR:-$BACKUP_ROOT}"
     fi
     fix_ownership
-    systemctl enable "${MONAD_SERVICES[@]}" 2>/dev/null || true
 
-    # The key swap is done. If the services fail to start, record step 7 as
-    # complete FIRST so --resume never repeats the (now impossible) swap, then
-    # hand the operator the exact recovery commands.
+    # The swap is complete: record it BEFORE starting services, so a crash or
+    # start failure past this point resumes into verification, never back
+    # into the (now impossible) swap.
+    save_state "last_step" "7"
+
+    systemctl enable "${MONAD_SERVICES[@]}" 2>/dev/null || true
     if ! systemctl start "${MONAD_SERVICES[@]}"; then
-      save_state "last_step" "7"
       die "The validator keys are in place, but the services failed to start." \
         "The swap is done — do NOT re-run the cutover." \
         "Diagnose: journalctl -xeu monad-bft" \
@@ -806,8 +872,6 @@ promote() {
         "Then finish up:  ./monad-failover.sh --resume"
     fi
     ok "Services started"
-
-    save_state "last_step" "7"
   fi
 
   # ── 8. Verify + refresh key backups ──
@@ -815,7 +879,12 @@ promote() {
     phase 8 "VERIFY"
     post_verify
     check_validator_api
-    refresh_key_backups
+    if ! refresh_key_backups; then
+      die "Key backup export failed after an otherwise successful promotion." \
+        "The validator itself is live — nothing else is wrong. Previous backup" \
+        "copies are preserved as *.bak in $BACKUP_ROOT." \
+        "Retry just this export with: ./monad-failover.sh --resume"
+    fi
     save_state "last_step" "8"
   fi
 
@@ -856,7 +925,7 @@ mode_dry_run() {
 
   step "REQUIRED COMMANDS"
   local c
-  for c in curl systemctl sed monad-keystore monad-sign-name-record; do
+  for c in curl systemctl sed sha256sum monad-keystore monad-sign-name-record; do
     if command -v "$c" >/dev/null 2>&1; then
       ok "$c"
     else
@@ -931,7 +1000,8 @@ mode_dry_run() {
   echo "  4. Sign the name record with the seq_num you enter (used verbatim)"
   echo "     and patch the staged node.toml.new"
   echo "  5. After confirming the old validator is stopped: stop services,"
-  echo "     swap the staged keys and config into place, restart as validator"
+  echo "     swap the staged keys and config into place (resumable if"
+  echo "     interrupted mid-swap), restart as validator"
   echo "  6. Verify every service is active, then re-export fresh key backups"
 
   echo
@@ -1004,6 +1074,15 @@ rm -rf "$STATE_DIR/promote" "$STATE_DIR/prepare-standby" "$STATE_DIR/restore-ful
 if ! $RESUME && [[ -f "$STATE_FILE" ]]; then
   _last="$(load_state "last_step")"
   if [[ -n "$_last" ]]; then
+    # Once a cutover has begun, "start fresh" is no longer safe: it would
+    # re-snapshot (and re-reference) a possibly half-swapped identity as this
+    # node's own. The interrupted run must be finished with --resume instead.
+    if [[ "$(load_state "cutover_started")" == "1" ]]; then
+      die "A previous run reached cutover — starting fresh is not safe now." \
+        "Finish the interrupted run instead: ./monad-failover.sh --resume" \
+        "(Only if you have manually restored this node and are sure, delete" \
+        "$STATE_FILE to allow a fresh run.)"
+    fi
     warn "Previous run stopped at step $_last"
     echo "  Run with --resume to continue, or start fresh."
     if confirm_yn "  Start fresh?"; then

@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
-# Mock monad-status: reports the status set in $MOCK_STATUS (default in-sync).
+# Mock monad-status. Mirrors the real tool's dependency on the node actually
+# running: it can only report in-sync while the mock services are active
+# (same marker file as the systemctl mock). With services down it reports
+# not-running — exactly like real hardware after a cutover stop. This is what
+# keeps "fresh run after a partial cutover" scenarios from falsely passing.
+# MOCK_STATUS still overrides the reported status for the sync-gate tests.
+MARKER="${MOCK_LOG:-/tmp/mock-systemctl}.active"
+if [[ ! -f "$MARKER" ]]; then
+  echo "status: not-running"
+  echo "blockDifference: unknown"
+  exit 0
+fi
 echo "status: ${MOCK_STATUS:-in-sync}"
 echo "blockDifference: ${MOCK_BLOCK_DIFF:-0}"
