@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.1 — 2026-07-16
+
+- The RPC exposure warning no longer talks past operators who already run a
+  deny-by-default firewall: a listening socket behind ufw is fine, and the
+  message now says so instead of implying action is always required.
+
 ## 1.7.0 — 2026-07-16
 
 Fixes from an independent re-audit of 1.6.1 (two adversarial passes: security
