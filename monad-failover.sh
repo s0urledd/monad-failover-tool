@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.7.0"
+VERSION="1.7.1"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -190,9 +190,10 @@ check_rpc() {
     fi
   done
   if [[ ${#exposed[@]} -gt 0 ]]; then
-    warn "Publicly listening RPC ports: ${exposed[*]}"
-    echo "  Validators should not expose RPC publicly."
-    echo "  Bind to localhost or block these ports with a firewall."
+    warn "RPC ports listening on all interfaces: ${exposed[*]}"
+    echo "  Validators should not expose RPC publicly. If a firewall (ufw etc.)"
+    echo "  already blocks these ports from outside, you are fine as is."
+    echo "  Otherwise bind them to localhost or block them now."
   else
     ok "No RPC ports publicly exposed (checked: ${RPC_PORTS[*]})"
   fi
