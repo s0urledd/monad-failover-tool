@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.7.1"
+VERSION="1.8.0"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -328,12 +328,21 @@ sign_and_patch() {
   # it the signer takes the seq from the argument and the pubkey from the
   # keystore, matching the official install-guide invocation. One seq source.
   step "SIGN NAME RECORD (seq $seq)"
+  # Newer monad releases replaced --address ip:port with separate --ip,
+  # --tcp-port and --udp-port flags. Detect which CLI the installed binary
+  # has from its help text and use the matching form, so both work.
+  local addr_args
+  if monad-sign-name-record --help 2>&1 | grep -q -- '--tcp-port'; then
+    addr_args=(--ip "$ip" --tcp-port 8000 --udp-port 8000)
+  else
+    addr_args=(--address "$ip:8000")
+  fi
   # stderr is dropped for the same reason as in import_staged_key: this call
   # carries the keystore password on argv, and an error path echoing it would
   # persist the secret to the run log.
   local sign_out
   if ! sign_out="$(monad-sign-name-record \
-    --address "$ip:8000" \
+    "${addr_args[@]}" \
     --authenticated-udp-port 8001 \
     --self-record-seq-num "$seq" \
     --keystore-path "$keypath" \
