@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Mock monad-sign-name-record: echoes the three patched lines in the real
-# tool's output shape, deriving values from the arguments it was given.
+# Mock monad-sign-name-record, mirroring the current upstream CLI: separate
+# --ip / --tcp-port / --udp-port flags. The removed --address form is
+# rejected exactly like the real binary rejects an unknown argument, so a
+# regression back to the old invocation fails the suite.
 #
 # Called WITHOUT --node-config (like the official install guide), the real
 # tool signs exactly the seq passed via --self-record-seq-num. MOCK_SEQ_OFFSET
@@ -9,10 +11,15 @@
 # ignore the seq argument and sign the stale config value.
 set -euo pipefail
 
-ADDRESS="" SEQ=""
+IP="" TCP_PORT="" SEQ=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --address)                shift; ADDRESS="$1" ;;
+    --address)
+      echo "error: unexpected argument '--address' (replaced by --ip/--tcp-port/--udp-port)" >&2
+      exit 1 ;;
+    --ip)                     shift; IP="$1" ;;
+    --tcp-port)               shift; TCP_PORT="$1" ;;
+    --udp-port)               shift ;;
     --self-record-seq-num)    shift; SEQ="$1" ;;
     --keystore-path)          shift ;;
     --password)               shift ;;
@@ -24,8 +31,8 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-[[ -n "$ADDRESS" && -n "$SEQ" ]] || { echo "missing args" >&2; exit 1; }
+[[ -n "$IP" && -n "$TCP_PORT" && -n "$SEQ" ]] || { echo "missing args" >&2; exit 1; }
 sig="$(printf 'ab%.0s' $(seq 1 65))"
-echo "self_address = \"$ADDRESS\""
+echo "self_address = \"$IP:$TCP_PORT\""
 echo "self_record_seq_num = $((SEQ + ${MOCK_SEQ_OFFSET:-0}))"
 echo "self_name_record_sig = \"$sig\""

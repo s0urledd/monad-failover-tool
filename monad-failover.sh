@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.7.1"
+VERSION="1.8.0"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -333,7 +333,9 @@ sign_and_patch() {
   # persist the secret to the run log.
   local sign_out
   if ! sign_out="$(monad-sign-name-record \
-    --address "$ip:8000" \
+    --ip "$ip" \
+    --tcp-port 8000 \
+    --udp-port 8000 \
     --authenticated-udp-port 8001 \
     --self-record-seq-num "$seq" \
     --keystore-path "$keypath" \
