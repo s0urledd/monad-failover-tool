@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.8.0 — 2026-07-28
+
+- **New monad-sign-name-record CLI.** Upstream replaced `--address ip:port`
+  with separate `--ip`, `--tcp-port` and `--udp-port` flags; the signer is
+  now invoked with the new form. The old form is not kept around: the change
+  ships with a hard fork, so there is no version to stay compatible with.
+- Tests: the signer mock mirrors the new CLI and rejects `--address`, so a
+  regression back to the old invocation fails the suite.
+
 ## 1.7.1 — 2026-07-16
 
 - The RPC exposure warning no longer talks past operators who already run a
