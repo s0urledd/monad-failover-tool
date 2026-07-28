@@ -576,6 +576,25 @@ EOF
   grep -q "pw=testpass\$" "$MONAD_HOME/monad-bft/config/id-secp"
 }
 
+@test "legacy signer CLI (--address) is detected and used" {
+  make_healthy_env
+  export MOCK_LEGACY_SIGNER=1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+2
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  grep -q '^self_address = "203.0.113.7:8000"' "$MONAD_HOME/monad-bft/config/node.toml"
+}
+
 @test "leftover state file offers resume and exits cleanly when declined" {
   make_healthy_env
   mkdir -p "$MONAD_HOME/.monad-failover"
