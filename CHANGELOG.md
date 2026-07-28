@@ -1,15 +1,13 @@
 # Changelog
 
-## 1.8.0 — 2026-07-17
+## 1.8.0 — 2026-07-28
 
-- **Support the new monad-sign-name-record CLI.** Upstream replaced
-  `--address ip:port` with separate `--ip`, `--tcp-port` and `--udp-port`
-  flags. The script now detects which CLI the installed binary has from its
-  help text and uses the matching form, so both old and new monad releases
-  work without a flag or config change.
-- Tests: the signer mock mirrors the new CLI (and rejects `--address`, so a
-  detection regression fails the suite); `MOCK_LEGACY_SIGNER=1` flips it to
-  the old CLI, and a new test covers the legacy path end to end (28 total).
+- **New monad-sign-name-record CLI.** Upstream replaced `--address ip:port`
+  with separate `--ip`, `--tcp-port` and `--udp-port` flags; the signer is
+  now invoked with the new form. The old form is not kept around: the change
+  ships with a hard fork, so there is no version to stay compatible with.
+- Tests: the signer mock mirrors the new CLI and rejects `--address`, so a
+  regression back to the old invocation fails the suite.
 
 ## 1.7.1 — 2026-07-16
 

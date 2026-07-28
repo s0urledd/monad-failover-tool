@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
-# Mock monad-sign-name-record, mirroring the CURRENT upstream CLI: the old
-# --address ip:port flag was replaced by separate --ip / --tcp-port /
-# --udp-port flags. --help advertises the new flags so the script's CLI
-# detection picks them, and --address is rejected exactly like the real
-# binary rejects an unknown argument.
-#
-# MOCK_LEGACY_SIGNER=1 flips the mock to the OLD CLI: help does not mention
-# --tcp-port, --address is accepted, --ip is rejected. Lets tests cover the
-# detection on both sides.
+# Mock monad-sign-name-record, mirroring the current upstream CLI: separate
+# --ip / --tcp-port / --udp-port flags. The removed --address form is
+# rejected exactly like the real binary rejects an unknown argument, so a
+# regression back to the old invocation fails the suite.
 #
 # Called WITHOUT --node-config (like the official install guide), the real
 # tool signs exactly the seq passed via --self-record-seq-num. MOCK_SEQ_OFFSET
@@ -16,30 +11,13 @@
 # ignore the seq argument and sign the stale config value.
 set -euo pipefail
 
-if [[ "${1:-}" == "--help" ]]; then
-  if [[ -n "${MOCK_LEGACY_SIGNER:-}" ]]; then
-    echo "Usage: monad-sign-name-record --address <ip:port> --authenticated-udp-port <port> ..."
-  else
-    echo "Usage: monad-sign-name-record --ip <ip> --tcp-port <port> --udp-port <port> --authenticated-udp-port <port> ..."
-  fi
-  exit 0
-fi
-
-IP="" TCP_PORT="" ADDRESS="" SEQ=""
+IP="" TCP_PORT="" SEQ=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --address)
-      if [[ -z "${MOCK_LEGACY_SIGNER:-}" ]]; then
-        echo "error: unexpected argument '--address' (replaced by --ip/--tcp-port/--udp-port)" >&2
-        exit 1
-      fi
-      shift; ADDRESS="$1" ;;
-    --ip)
-      if [[ -n "${MOCK_LEGACY_SIGNER:-}" ]]; then
-        echo "error: unexpected argument '--ip'" >&2
-        exit 1
-      fi
-      shift; IP="$1" ;;
+      echo "error: unexpected argument '--address' (replaced by --ip/--tcp-port/--udp-port)" >&2
+      exit 1 ;;
+    --ip)                     shift; IP="$1" ;;
     --tcp-port)               shift; TCP_PORT="$1" ;;
     --udp-port)               shift ;;
     --self-record-seq-num)    shift; SEQ="$1" ;;
@@ -53,11 +31,8 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-if [[ -n "$IP" && -n "$TCP_PORT" ]]; then
-  ADDRESS="$IP:$TCP_PORT"
-fi
-[[ -n "$ADDRESS" && -n "$SEQ" ]] || { echo "missing args" >&2; exit 1; }
+[[ -n "$IP" && -n "$TCP_PORT" && -n "$SEQ" ]] || { echo "missing args" >&2; exit 1; }
 sig="$(printf 'ab%.0s' $(seq 1 65))"
-echo "self_address = \"$ADDRESS\""
+echo "self_address = \"$IP:$TCP_PORT\""
 echo "self_record_seq_num = $((SEQ + ${MOCK_SEQ_OFFSET:-0}))"
 echo "self_name_record_sig = \"$sig\""
