@@ -39,9 +39,9 @@ the run log.
 ## Resume state is a root trust boundary
 
 A resume run reads its saved state back and acts on it while running as root:
-the state names the backup directory to restore from, the sequence number to
-sign, and the IP to publish. Whoever can write that file can steer the run, so
-the file must not be writable by anyone but root.
+the state names the sequence number to sign, the IP to publish, and the
+directory a failed step tells the operator to restore from. Whoever can write
+that file can steer the run, so the file must not be writable by anyone but root.
 
 For that reason the state lives in `/var/lib/monad-failover`, owned `root:root`
 and mode `0700`, with the state file itself `0600`. It is not under

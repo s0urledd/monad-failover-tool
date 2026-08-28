@@ -19,7 +19,7 @@ cd /home/monad
 curl -fsSLo monad-failover.sh \
   https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.0/monad-failover.sh
 
-echo "f545fc205f576c296165179e500baf1c9c356042b4cf39b3efb7d8a67d5abef4  monad-failover.sh" | sha256sum -c -
+echo "7e02d451a2007a227afecad06b5bc6602e7fb3f6a2594a2d34bb976efce68235  monad-failover.sh" | sha256sum -c -
 chmod +x monad-failover.sh
 ```
 

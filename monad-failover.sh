@@ -184,21 +184,30 @@ secure_state_dir() {
       "Remove it and re-run so the directory is created directly."
   fi
 
+  # Create it ourselves at 0700 when absent; as root that also makes it
+  # root-owned. An existing directory is NOT repaired and then trusted: if it
+  # was ever group/other-writable, someone may have planted the state file we
+  # would go on to act on. So an existing directory must ALREADY be exactly
+  # 0700 (and, in a root run, root-owned); otherwise refuse and let the
+  # operator remove and recreate it. Mode is checked in every run; ownership
+  # only means something as root, where the state actually needs protecting.
   if [[ ! -d "$STATE_DIR" ]]; then
-    mkdir -p "$STATE_DIR" || die "Could not create $STATE_DIR"
+    (umask 077 && mkdir -p "$STATE_DIR") || die "Could not create $STATE_DIR"
   fi
-  chmod 700 "$STATE_DIR" || die "Could not secure $STATE_DIR"
-
-  # The root-ownership requirement only makes sense for a root run; the
-  # unprivileged test suite works inside its own tmpdir, owned by whoever runs
-  # it. Gate on EUID, the same condition that fixes the state location.
+  local dmode
+  dmode="$(stat -c '%a' "$STATE_DIR" 2>/dev/null || true)"
+  if [[ "$dmode" != "700" ]]; then
+    die "$STATE_DIR has mode $dmode, not 700; refusing to use it." \
+      "It may have been writable by another user, so its contents are not" \
+      "trusted. Remove it and re-run:  rm -rf $STATE_DIR"
+  fi
   if [[ $EUID -eq 0 ]]; then
-    local owner
-    owner="$(stat -c '%u' "$STATE_DIR" 2>/dev/null || true)"
-    if [[ "$owner" != "0" ]]; then
-      die "$STATE_DIR is not owned by root." \
+    local downer
+    downer="$(stat -c '%u' "$STATE_DIR" 2>/dev/null || true)"
+    if [[ "$downer" != "0" ]]; then
+      die "$STATE_DIR is owned by uid $downer, not root; refusing to use it." \
         "Resume state must not be writable by the monad service account." \
-        "Fix it with: chown root:root $STATE_DIR && chmod 700 $STATE_DIR"
+        "Remove it and re-run:  rm -rf $STATE_DIR"
     fi
   fi
 
@@ -208,10 +217,63 @@ secure_state_dir() {
       "$BACKUP_ROOT and start a fresh run."
   fi
   if [[ -e "$STATE_FILE" ]]; then
-    if [[ ! -f "$STATE_FILE" ]]; then
-      die "$STATE_FILE is not a regular file; refusing to use it."
+    [[ -f "$STATE_FILE" ]] || die "$STATE_FILE is not a regular file; refusing to use it."
+    if [[ $EUID -eq 0 ]]; then
+      local fowner
+      fowner="$(stat -c '%u' "$STATE_FILE" 2>/dev/null || true)"
+      [[ "$fowner" == "0" ]] || die \
+        "$STATE_FILE is owned by uid $fowner, not root; refusing to use it." \
+        "Remove it and start a fresh run."
     fi
+    # Tighten going forward (defence in depth; the 0700 root dir already keeps
+    # everyone else out). This narrows, it never widens, so it cannot make a
+    # loose file trusted.
     chmod 600 "$STATE_FILE" 2>/dev/null || true
+  fi
+}
+
+# Cross-field consistency, enforced before BOTH the resume path and the
+# fresh-run decision so a tampered or truncated state file slips past neither.
+# Field shapes are re-checked here because this runs ahead of the per-field
+# resume validation.
+validate_state_consistency() {
+  [[ -f "$STATE_FILE" ]] || return 0
+  local ls cs s1 s2 s3
+  ls="$(load_state "last_step")"
+  cs="$(load_state "cutover_started")"
+  s1="$(load_state "staged_secp_sha")"
+  s2="$(load_state "staged_bls_sha")"
+  s3="$(load_state "staged_toml_sha")"
+
+  check_state_field "cutover_started" "$cs" '^1?$'
+  check_state_field "staged_secp_sha" "$s1" '^([0-9a-f]{64})?$'
+  check_state_field "staged_bls_sha"  "$s2" '^([0-9a-f]{64})?$'
+  check_state_field "staged_toml_sha" "$s3" '^([0-9a-f]{64})?$'
+  [[ -z "$ls" ]] || check_state_field "last_step" "$ls" '^[1-8]$'
+
+  # A cutover in progress must carry the three staged checksums (saved just
+  # before the flag) and sit at step 6-8; without them a resumed cutover cannot
+  # tell a completed swap from a partial one.
+  if [[ "$cs" == "1" ]]; then
+    [[ "$ls" =~ ^[678]$ ]] || die \
+      "State file is inconsistent: cutover is marked started but last_step is '$ls'." \
+      "Refusing to act on it." \
+      "Restore this node from $BACKUP_ROOT, remove $STATE_FILE, then start fresh."
+    [[ -n "$s1" && -n "$s2" && -n "$s3" ]] || die \
+      "State file is inconsistent: cutover is marked started but a staged checksum is missing." \
+      "Refusing to act on it." \
+      "Restore this node from $BACKUP_ROOT, remove $STATE_FILE, then start fresh."
+  fi
+
+  # Reaching step 7 means the cutover ran; the flag must say so. If it does not,
+  # offering "start fresh" would re-snapshot a swapped identity as this node's
+  # own, so refuse and require --resume (or a manual restore) instead.
+  if [[ -n "$ls" && "$ls" -ge 7 && "$cs" != "1" ]]; then
+    die \
+      "State file is inconsistent: it reached step $ls but cutover is not marked started." \
+      "Refusing to act on it." \
+      "Finish with --resume only if the cutover truly completed; otherwise restore" \
+      "from $BACKUP_ROOT, remove $STATE_FILE, and start fresh."
   fi
 }
 
@@ -1235,6 +1297,7 @@ fi
 
 refuse_legacy_state
 secure_state_dir
+validate_state_consistency
 
 if ! $RESUME && [[ -f "$STATE_FILE" ]]; then
   _last="$(load_state "last_step")"
