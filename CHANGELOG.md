@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.9.0 — 2026-08-28
+
+Security hardening of the resume state, which a live run reads back and acts on
+while running as root.
+
+- **State moved to a root-owned location.** Resume state now lives in
+  `/var/lib/monad-failover` (`root:root`, `0700`; state file `0600`) instead of
+  `/home/monad/.monad-failover`. The old path is under `$MONAD_HOME`, writable by
+  the unprivileged `monad` service account — anyone who could write it could steer
+  a root run.
+- **Injection fix.** The step counter read from state reached an arithmetic
+  expansion without validation. Bash arithmetic evaluates an array subscript and a
+  subscript runs command substitution, so a crafted value executed as root (the
+  `set -u` guard only caught the naive form). Every field read from state is now
+  checked against a narrow, format-specific allowlist before use, the step counter
+  is range-checked (`1-8`, so an out-of-range value can no longer skip the whole
+  migration), and each step's required fields must be present before a resume acts
+  on them.
+- **Symlink and ownership guards.** The script refuses to run if the state
+  directory is not root-owned, or if the directory or state file is a symlink or
+  the state file is not a regular file, and writes state atomically through a
+  `mktemp` file rather than a predictable `.tmp` name.
+- **A loose state directory is refused, not repaired.** An existing state
+  directory must already be `0700` (and root-owned in a live run); the script no
+  longer relaxes-then-trusts one that was left group- or world-writable, since its
+  contents may have been planted.
+- **Cutover/state consistency is enforced** before both a resume and a fresh-run
+  decision: a `cutover_started` flag requires the three staged checksums and a
+  step of 6-8, and reaching step 7+ requires the flag. This closes a path where a
+  truncated state file could offer "start fresh" after a cutover had already run.
+- **Legacy state is refused, not migrated.** State left by an older version under
+  `/home/monad/.monad-failover` is treated as untrusted: the run stops and asks
+  you to inspect and remove it rather than resuming from it.
+- **`MF_STATE_DIR` override is test-only.** It is honoured only alongside
+  `MF_ALLOW_NONROOT`; a live root run rejects it so the state location cannot be
+  redirected to a user-writable path.
+- Bounded the two outbound `curl` calls with `--max-time` and a response-size cap.
+- Tests: 17 new cases cover the injection (a payload that bypasses `set -u`),
+  range and presence checks, symlinked dir/file, non-root ownership, refusal of a
+  loose-permission state dir, legacy-state refusal, the `MF_STATE_DIR` guard,
+  `backup_dir` escaping the backup root, `network`/`beneficiary` shape, the
+  cutover-consistency rules, and permission handling. The suite runs unprivileged.
+
 ## 1.8.0 — 2026-07-28
 
 - **New monad-sign-name-record CLI.** Upstream replaced `--address ip:port`

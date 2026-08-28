@@ -9,9 +9,19 @@ SECP_IKM="1111111111111111111111111111111111111111111111111111111111111111"
 BLS_IKM="2222222222222222222222222222222222222222222222222222222222222222"
 
 setup() {
+  # The sandbox pins state via MF_STATE_DIR, which a live (root) run rejects by
+  # design, so the suite runs unprivileged the way CI does. Under root, skip
+  # everything except the one test that deliberately exercises the root path.
+  case "$BATS_TEST_DESCRIPTION" in
+    *"root only"*) : ;;
+    *) [ "$EUID" -ne 0 ] || skip "run bats as a non-root user (CI does)" ;;
+  esac
   export MONAD_HOME="$BATS_TEST_TMPDIR/home/monad"
   export BACKUP_ROOT="$BATS_TEST_TMPDIR/opt/monad/backup"
   export LOG_DIR="$BATS_TEST_TMPDIR/opt/monad/failover-logs"
+  # The real run pins state to /var/lib/monad-failover; MF_STATE_DIR is the
+  # test-only override, honoured solely because MF_ALLOW_NONROOT is set below.
+  export MF_STATE_DIR="$BATS_TEST_TMPDIR/var/lib/monad-failover"
   export MOCK_LOG="$BATS_TEST_TMPDIR/mock.log"
   export PATH="$REPO_ROOT/tests/mocks:$PATH"
   export MF_ALLOW_NONROOT=1
@@ -167,7 +177,7 @@ EOF
   grep -q "systemctl start monad-bft" "$MOCK_LOG"
 
   # resume state cleared after success
-  [ ! -f "$MONAD_HOME/.monad-failover/state" ]
+  [ ! -f "$MF_STATE_DIR/state" ]
 
   # the run was recorded to a log file
   local logf
@@ -295,7 +305,7 @@ EOF
   [ "$status" -eq 1 ]
   [[ "$output" == *"not active after cutover"* ]]
   # cutover itself is done and recorded; state kept for --resume
-  grep -q "last_step=7" "$MONAD_HOME/.monad-failover/state"
+  grep -q "last_step=7" "$MF_STATE_DIR/state"
 
   unset MOCK_CRASH_AFTER_START
   touch "$MOCK_LOG.active"   # operator fixed it; services are up again
@@ -364,7 +374,7 @@ EOF
   grep -q '^node_name = "validator-one"' "$cfg/node.toml"
   [ ! -f "$cfg/id-secp.new" ]
   [ ! -f "$cfg/node.toml.new" ]
-  grep -q "last_step=7" "$MONAD_HOME/.monad-failover/state"
+  grep -q "last_step=7" "$MF_STATE_DIR/state"
 
   # Resuming while services are still down must be refused by the health gate.
   run bash "$SCRIPT" --resume </dev/null
@@ -376,15 +386,15 @@ EOF
   run bash "$SCRIPT" --resume </dev/null
   [ "$status" -eq 0 ]
   [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
-  [ ! -f "$MONAD_HOME/.monad-failover/state" ]
+  [ ! -f "$MF_STATE_DIR/state" ]
 }
 
 @test "cutover refuses when a staging key is missing (no service stop)" {
   make_healthy_env
   # Simulate a prior run that reached the cutover gate with state at 6 but
   # only one staging file present.
-  mkdir -p "$MONAD_HOME/.monad-failover"
-  cat > "$MONAD_HOME/.monad-failover/state" <<EOF
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  cat > "$MF_STATE_DIR/state" <<EOF
 last_step=6
 network=testnet
 new_seq=2
@@ -393,6 +403,7 @@ bls_pub=0xBLStest
 ip=203.0.113.7
 self_address=203.0.113.7:8000
 self_sig=abcd
+self_seq=2
 beneficiary=0xBEEF00000000000000000000000000000000BEEF
 backup_dir=$BACKUP_ROOT/failover-x
 EOF
@@ -453,7 +464,7 @@ EOF
   grep -q "ikm=$SECP_IKM" "$cfg/id-secp"
   grep -q "ikm=8888" "$cfg/id-bls"
   [ -f "$cfg/id-bls.new" ]
-  grep -q "last_step=6" "$MONAD_HOME/.monad-failover/state"
+  grep -q "last_step=6" "$MF_STATE_DIR/state"
 
   # --resume finishes the interrupted cutover: the placed secp is recognized
   # by its recorded checksum, the remaining files are moved, services start.
@@ -466,7 +477,7 @@ EOF
   [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
   grep -q "ikm=$BLS_IKM" "$cfg/id-bls"
   grep -q '^node_name = "validator-one"' "$cfg/node.toml"
-  [ ! -f "$MONAD_HOME/.monad-failover/state" ]
+  [ ! -f "$MF_STATE_DIR/state" ]
 }
 
 @test "crash after full swap but before start: resume recognizes placed files" {
@@ -479,8 +490,8 @@ EOF
   monad-keystore import --ikm "$BLS_IKM" --keystore-path "$cfg/id-bls" --password "testpass"
   rm -f "$MOCK_LOG.active"   # services were stopped for the cutover
 
-  mkdir -p "$MONAD_HOME/.monad-failover"
-  cat > "$MONAD_HOME/.monad-failover/state" <<EOF
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  cat > "$MF_STATE_DIR/state" <<EOF
 last_step=6
 cutover_started=1
 network=testnet
@@ -506,22 +517,27 @@ EOF
   [[ "$output" == *"already in place from a previous cutover attempt"* ]]
   [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
   grep -q "systemctl start monad-bft" "$MOCK_LOG"
-  [ ! -f "$MONAD_HOME/.monad-failover/state" ]
+  [ ! -f "$MF_STATE_DIR/state" ]
 }
 
 @test "fresh run is refused while an interrupted cutover exists" {
   make_healthy_env
-  mkdir -p "$MONAD_HOME/.monad-failover"
-  cat > "$MONAD_HOME/.monad-failover/state" <<EOF
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  # a real cutover_started state always carries the three staged checksums
+  # (they are saved just before the flag), so a realistic fixture includes them
+  cat > "$MF_STATE_DIR/state" <<EOF
 last_step=6
 cutover_started=1
+staged_secp_sha=$(printf 'a%.0s' {1..64})
+staged_bls_sha=$(printf 'b%.0s' {1..64})
+staged_toml_sha=$(printf 'c%.0s' {1..64})
 EOF
   run bash "$SCRIPT" </dev/null
   [ "$status" -eq 1 ]
   [[ "$output" == *"reached cutover"* ]]
   [[ "$output" == *"--resume"* ]]
   # the state must survive: it is the only map of how far the cutover got
-  grep -q "cutover_started=1" "$MONAD_HOME/.monad-failover/state"
+  grep -q "cutover_started=1" "$MF_STATE_DIR/state"
 }
 
 @test "failed key backup export keeps resume state; resume retries only the export" {
@@ -543,7 +559,7 @@ EOF
   [[ "$output" == *"Key backup export failed"* ]]
   [[ "$output" == *"--resume"* ]]
   # the promotion itself happened; state kept at 7 so --resume lands in step 8
-  grep -q "last_step=7" "$MONAD_HOME/.monad-failover/state"
+  grep -q "last_step=7" "$MF_STATE_DIR/state"
   # the old backup was preserved, no truncated replacement left behind
   ls "$BACKUP_ROOT"/secp-backup.*.bak >/dev/null
   [ ! -f "$BACKUP_ROOT/secp-backup" ]
@@ -553,7 +569,7 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
   grep -q "Keystore secret: $SECP_IKM" "$BACKUP_ROOT/secp-backup"
-  [ ! -f "$MONAD_HOME/.monad-failover/state" ]
+  [ ! -f "$MF_STATE_DIR/state" ]
 }
 
 @test ".env with CRLF line endings still yields the exact password" {
@@ -578,13 +594,237 @@ EOF
 
 @test "leftover state file offers resume and exits cleanly when declined" {
   make_healthy_env
-  mkdir -p "$MONAD_HOME/.monad-failover"
-  echo "last_step=3" > "$MONAD_HOME/.monad-failover/state"
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  echo "last_step=3" > "$MF_STATE_DIR/state"
   run bash "$SCRIPT" <<'EOF'
 n
 EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"--resume"* ]]
   # state must survive the declined prompt
-  grep -q "last_step=3" "$MONAD_HOME/.monad-failover/state"
+  grep -q "last_step=3" "$MF_STATE_DIR/state"
+}
+
+# ── state trust boundary ───────────────────────────────────
+# A resume run reads this state back and acts on it while holding root. These
+# cover that boundary rather than the promotion flow: on a real node the old
+# location was under $MONAD_HOME, writable by the unprivileged monad account.
+
+@test "state: command injection in last_step is refused, not evaluated" {
+  make_healthy_env
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  # $(( )) evaluates an array subscript, and a subscript runs command
+  # substitution: unvalidated, this line would execute as root.
+  printf 'last_step=PATH[$(touch %s/PWNED)]\n' "$BATS_TEST_TMPDIR" > "$MF_STATE_DIR/state"
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"last_step"* ]]
+  [ ! -e "$BATS_TEST_TMPDIR/PWNED" ]
+}
+
+@test "state: injected last_step is refused on a non-resume run too" {
+  make_healthy_env
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  printf 'last_step=PATH[$(touch %s/PWNED)]\n' "$BATS_TEST_TMPDIR" > "$MF_STATE_DIR/state"
+  run bash "$SCRIPT" </dev/null
+  [ "$status" -eq 1 ]
+  [ ! -e "$BATS_TEST_TMPDIR/PWNED" ]
+}
+
+@test "state: a symlinked state file is refused and its target is untouched" {
+  make_healthy_env
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  echo "important" > "$BATS_TEST_TMPDIR/victim"
+  ln -s "$BATS_TEST_TMPDIR/victim" "$MF_STATE_DIR/state"
+  run bash "$SCRIPT" </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"symlink"* ]]
+  [ "$(cat "$BATS_TEST_TMPDIR/victim")" = "important" ]
+}
+
+@test "state: a symlinked state directory is refused" {
+  make_healthy_env
+  mkdir -p "$BATS_TEST_TMPDIR/var/lib" "$BATS_TEST_TMPDIR/elsewhere"
+  ln -s "$BATS_TEST_TMPDIR/elsewhere" "$MF_STATE_DIR"
+  run bash "$SCRIPT" </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"symlink"* ]]
+}
+
+@test "state: legacy state under MONAD_HOME is refused, never migrated" {
+  make_healthy_env
+  mkdir -p "$MONAD_HOME/.monad-failover"
+  echo "last_step=6" > "$MONAD_HOME/.monad-failover/state"
+  run bash "$SCRIPT" </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"older version"* ]]
+  # not adopted into the new location...
+  [ ! -f "$MF_STATE_DIR/state" ]
+  # ...and left in place for the operator to inspect
+  grep -q "last_step=6" "$MONAD_HOME/.monad-failover/state"
+}
+
+@test "state: MF_STATE_DIR is refused outside the test sandbox" {
+  run env -u MF_ALLOW_NONROOT MF_STATE_DIR="$BATS_TEST_TMPDIR/anywhere" \
+    bash "$SCRIPT" --version
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"MF_STATE_DIR"* ]]
+}
+
+@test "state: backup_dir pointing outside the backup root is refused" {
+  make_healthy_env
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  cat > "$MF_STATE_DIR/state" <<EOF
+last_step=6
+backup_dir=$BATS_TEST_TMPDIR/evil
+EOF
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"backup_dir"* ]]
+}
+
+@test "state: a loose-permission state dir is refused, not repaired" {
+  [ "$EUID" -ne 0 ] || skip "MF_STATE_DIR is ignored as root; the /var/lib ownership test covers root"
+  make_healthy_env
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  echo "last_step=3" > "$MF_STATE_DIR/state"
+  chmod 777 "$MF_STATE_DIR"            # as if a prior misconfig left it world-writable
+  run bash "$SCRIPT" </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not 700"* ]]
+  # the suspect state is left in place, not silently adopted
+  [ "$(stat -c '%a' "$MF_STATE_DIR")" = "777" ]
+}
+
+# The root-ownership branch cannot be reached through MF_STATE_DIR: a root run
+# ignores that override by design and uses the fixed /var/lib path. So this one
+# exercises the real path, and only as root; CI (non-root) skips it, and it
+# refuses to touch a pre-existing /var/lib/monad-failover it did not create.
+@test "state: a non-root-owned state dir is refused (root only)" {
+  [ "$EUID" -eq 0 ] || skip "ownership check only runs as root"
+  [ -e /var/lib/monad-failover ] && skip "will not disturb an existing /var/lib/monad-failover"
+  make_healthy_env
+  mkdir -p /var/lib/monad-failover && chmod 700 /var/lib/monad-failover
+  echo "last_step=3" > /var/lib/monad-failover/state
+  chown -R 4021:4021 /var/lib/monad-failover
+  run env -u MF_ALLOW_NONROOT -u MF_STATE_DIR bash "$SCRIPT" </dev/null
+  rm -rf /var/lib/monad-failover
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not root"* ]]
+}
+
+# Companion to the dir-ownership test: a root-owned 0700 dir whose state FILE
+# was somehow left owned by another user is refused too. Root path, real
+# /var/lib, self-skips off-root and will not disturb an existing directory.
+@test "state: a non-root-owned state file is refused (root only)" {
+  [ "$EUID" -eq 0 ] || skip "ownership check only runs as root"
+  [ -e /var/lib/monad-failover ] && skip "will not disturb an existing /var/lib/monad-failover"
+  make_healthy_env
+  mkdir -p /var/lib/monad-failover && chmod 700 /var/lib/monad-failover
+  echo "last_step=3" > /var/lib/monad-failover/state
+  chown 4021:4021 /var/lib/monad-failover/state   # dir stays root, file does not
+  run env -u MF_ALLOW_NONROOT -u MF_STATE_DIR bash "$SCRIPT" </dev/null
+  rm -rf /var/lib/monad-failover
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not root"* ]]
+}
+
+@test "state: an out-of-range last_step is refused (no fake completion)" {
+  make_healthy_env
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  echo "last_step=999" > "$MF_STATE_DIR/state"
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"last_step"* ]]
+  [[ "$output" != *"PROMOTION COMPLETE"* ]]
+}
+
+@test "state: reaching step 6 with an empty signed field is refused" {
+  make_healthy_env
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  cat > "$MF_STATE_DIR/state" <<EOF
+last_step=6
+network=testnet
+secp_pub=0xSECPvalidator
+bls_pub=0xBLSvalidator
+new_seq=8
+ip=
+self_address=
+self_sig=
+self_seq=
+EOF
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"incomplete"* || "$output" == *"empty"* ]]
+}
+
+@test "state: a bogus network value is refused" {
+  make_healthy_env
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  printf 'last_step=2\nnetwork=evil$(id)\n' > "$MF_STATE_DIR/state"
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"network"* ]]
+}
+
+@test "state: a malformed beneficiary in state is refused" {
+  make_healthy_env
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  printf 'last_step=5\nnetwork=testnet\nsecp_pub=0xSECPvalidator\nbls_pub=0xBLSvalidator\nnew_seq=8\nbeneficiary=0xnothex\n' > "$MF_STATE_DIR/state"
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"beneficiary"* ]]
+}
+
+@test "state: last_step 7 without cutover_started is refused (no fresh-start offer)" {
+  make_healthy_env
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  # a post-cutover step recorded, but the cutover flag stripped
+  cat > "$MF_STATE_DIR/state" <<EOF
+last_step=7
+network=testnet
+EOF
+  run bash "$SCRIPT" </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"inconsistent"* ]]
+  [[ "$output" != *"Start fresh?"* ]]
+}
+
+@test "state: cutover_started=1 with a missing staged checksum is refused" {
+  make_healthy_env
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  cat > "$MF_STATE_DIR/state" <<EOF
+last_step=6
+cutover_started=1
+staged_secp_sha=$(printf 'a%.0s' {1..64})
+staged_bls_sha=$(printf 'b%.0s' {1..64})
+EOF
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"inconsistent"* ]]
+}
+
+@test "state: cutover_started=1 at step 6 with all three checksums is accepted" {
+  make_healthy_env
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  # a legitimate mid-cutover state must NOT be rejected by the consistency gate;
+  # it should proceed into the resume path (which then handles the cutover).
+  cat > "$MF_STATE_DIR/state" <<EOF
+last_step=6
+network=testnet
+secp_pub=0xSECPvalidator
+bls_pub=0xBLSvalidator
+new_seq=8
+ip=203.0.113.7
+self_address=203.0.113.7:8000
+self_sig=abcd
+self_seq=8
+cutover_started=1
+staged_secp_sha=$(printf 'a%.0s' {1..64})
+staged_bls_sha=$(printf 'b%.0s' {1..64})
+staged_toml_sha=$(printf 'c%.0s' {1..64})
+EOF
+  run bash "$SCRIPT" --resume </dev/null
+  # it gets past the consistency gate; it does not die with "inconsistent"
+  [[ "$output" != *"inconsistent"* ]]
 }
