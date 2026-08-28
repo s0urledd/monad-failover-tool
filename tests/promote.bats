@@ -713,6 +713,22 @@ EOF
   [[ "$output" == *"not root"* ]]
 }
 
+# Companion to the dir-ownership test: a root-owned 0700 dir whose state FILE
+# was somehow left owned by another user is refused too. Root path, real
+# /var/lib, self-skips off-root and will not disturb an existing directory.
+@test "state: a non-root-owned state file is refused (root only)" {
+  [ "$EUID" -eq 0 ] || skip "ownership check only runs as root"
+  [ -e /var/lib/monad-failover ] && skip "will not disturb an existing /var/lib/monad-failover"
+  make_healthy_env
+  mkdir -p /var/lib/monad-failover && chmod 700 /var/lib/monad-failover
+  echo "last_step=3" > /var/lib/monad-failover/state
+  chown 4021:4021 /var/lib/monad-failover/state   # dir stays root, file does not
+  run env -u MF_ALLOW_NONROOT -u MF_STATE_DIR bash "$SCRIPT" </dev/null
+  rm -rf /var/lib/monad-failover
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not root"* ]]
+}
+
 @test "state: an out-of-range last_step is refused (no fake completion)" {
   make_healthy_env
   mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"

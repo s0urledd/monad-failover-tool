@@ -37,7 +37,7 @@ while running as root.
   `MF_ALLOW_NONROOT`; a live root run rejects it so the state location cannot be
   redirected to a user-writable path.
 - Bounded the two outbound `curl` calls with `--max-time` and a response-size cap.
-- Tests: 16 new cases cover the injection (a payload that bypasses `set -u`),
+- Tests: 17 new cases cover the injection (a payload that bypasses `set -u`),
   range and presence checks, symlinked dir/file, non-root ownership, refusal of a
   loose-permission state dir, legacy-state refusal, the `MF_STATE_DIR` guard,
   `backup_dir` escaping the backup root, `network`/`beneficiary` shape, the

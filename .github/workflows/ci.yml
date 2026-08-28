@@ -52,3 +52,9 @@ jobs:
 
       - name: End-to-end tests (mocked Monad binaries)
         run: bats tests
+
+      # The unprivileged suite skips the root-ownership refusal (it needs EUID 0
+      # and the real /var/lib path); run just those as root so the production
+      # branch of the state-directory guard is actually exercised in CI.
+      - name: Root-only state-ownership checks
+        run: sudo bats tests/promote.bats --filter 'root only'

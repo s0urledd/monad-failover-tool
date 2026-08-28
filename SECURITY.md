@@ -54,7 +54,7 @@ and mode `0700`, with the state file itself `0600`. It is not under
 - writes state atomically through a `mktemp` file inside that directory, never a
   predictable `.tmp` name;
 - validates every field it reads back against a narrow allowlist before use. In
-  particular the step counter is checked to be digits before it reaches an
+  particular the step counter is range-checked to 1-8 before it reaches an
   arithmetic expansion, because Bash arithmetic evaluates an array subscript and
   a subscript runs command substitution, so an unchecked value there would
   execute as root;
