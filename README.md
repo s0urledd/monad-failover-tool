@@ -74,22 +74,22 @@ the interrupted one is finished. Every live run is also recorded to
 `/opt/monad/failover-logs/` (no secrets ever appear in the output), so you always
 have a log of what happened.
 
-## Why trust a shell script with your validator keys?
+## Why trust one bash file with your validator keys?
 
-Fair question. The mitigations, in the order they matter:
+Fair question.
 
-1. **One auditable file.** Nothing to vet beyond the Monad binaries and the tools
-   every Ubuntu server already ships (bash, curl, systemd, grep/sed/awk/ss). Read
-   it before you run it; it is short.
-2. **Dry-run first.** `--dry-run` exercises every check without touching a file, key
-   or service.
-3. **Checksum-pinned.** The README hash must match the script, and CI fails otherwise.
-4. **Tested end-to-end.** CI runs the full promotion flow (including cutover failure
-   and resume) against mocked Monad binaries with bats, plus ShellCheck, on every commit.
-5. **Nothing sensitive leaves the machine.** No telemetry. The only outbound calls
-   are HTTPS requests to `ifconfig.me` (public-IP detection) and the monval uptime
-   API (post-cutover check, public key only). Secrets are never logged, and secret
-   files are created `600`. See [SECURITY.md](SECURITY.md) for the full surface.
+There is nothing to vet beyond the Monad binaries and the tools every Ubuntu server
+already ships (bash, curl, systemd, grep/sed/awk/ss). Read it before you run it; it
+is short. The README pins its sha256 and CI fails if the two drift apart.
+
+Nothing runs blind. `--dry-run` exercises every check without touching a file, key
+or service. CI runs the full promotion flow against mocked Monad binaries with bats,
+including cutover failure and resume, plus ShellCheck on every commit.
+
+Nothing sensitive leaves the machine. There is no telemetry. The only outbound calls
+are HTTPS requests to `ifconfig.me` for public-IP detection and the monval uptime API
+for the post-cutover check, which sends a public key. Secrets are never logged, and
+secret files are created `600`. See [SECURITY.md](SECURITY.md) for the full surface.
 
 ## Battle-tested
 
