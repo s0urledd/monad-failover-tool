@@ -9,7 +9,7 @@ standard system tools. Concretely, it:
 - reads `KEYSTORE_PASSWORD` from `/home/monad/.env` (by parsing the one line, not
   by sourcing the file as code) and reads your `secp-backup` / `bls-backup` files
 - writes only under `/home/monad/monad-bft/config`, `/opt/monad/backup` and
-  `/home/monad/.monad-failover` (resume state)
+  `/var/lib/monad-failover` (resume state)
 - manages only the `monad-bft`, `monad-execution` and `monad-rpc` systemd units
 - makes two kinds of outbound requests, both HTTPS: `ifconfig.me` to detect the
   server's public IP, and the monval uptime API (`validator-api.huginn.tech`) after
@@ -35,6 +35,36 @@ hidden (`read -s`), IKM shell variables are cleared right after use, and the
 output of every key-tool invocation that carries a secret on its command line is
 suppressed, so even an error path that echoed its arguments could not land in
 the run log.
+
+## Resume state is a root trust boundary
+
+A resume run reads its saved state back and acts on it while running as root:
+the state names the backup directory to restore from, the sequence number to
+sign, and the IP to publish. Whoever can write that file can steer the run, so
+the file must not be writable by anyone but root.
+
+For that reason the state lives in `/var/lib/monad-failover`, owned `root:root`
+and mode `0700`, with the state file itself `0600`. It is not under
+`/home/monad`, which the unprivileged `monad` service account owns. On startup the script:
+
+- refuses to run if the state directory is not owned by root, or if the
+  directory or the state file is a symlink, or the state file is not a regular
+  file (an unprivileged user could otherwise pre-stage a symlink to redirect a
+  root write);
+- writes state atomically through a `mktemp` file inside that directory, never a
+  predictable `.tmp` name;
+- validates every field it reads back against a narrow allowlist before use. In
+  particular the step counter is checked to be digits before it reaches an
+  arithmetic expansion, because Bash arithmetic evaluates an array subscript and
+  a subscript runs command substitution, so an unchecked value there would
+  execute as root;
+- refuses, rather than silently migrating, any state left by an older version
+  under `/home/monad/.monad-failover`: that path is writable by the `monad`
+  account, so it is treated as untrusted and left in place for you to inspect.
+
+If you see one of these refusals on a machine only you administer, it usually
+means an interrupted run and a stale file: restore the node from
+`/opt/monad/backup` if needed, remove the reported path, and start a fresh run.
 
 ## Verifying what you run
 

@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.9.0 — 2026-08-28
+
+Security hardening of the resume state, which a live run reads back and acts on
+while running as root.
+
+- **State moved to a root-owned location.** Resume state now lives in
+  `/var/lib/monad-failover` (`root:root`, `0700`; state file `0600`) instead of
+  `/home/monad/.monad-failover`. The old path is under `$MONAD_HOME`, writable by
+  the unprivileged `monad` service account — anyone who could write it could steer
+  a root run.
+- **Injection fix.** The step counter read from state reached an arithmetic
+  expansion without validation. Bash arithmetic evaluates an array subscript and a
+  subscript runs command substitution, so a crafted value executed as root (the
+  `set -u` guard only caught the naive form). Every field read from state is now
+  checked against a narrow allowlist before use.
+- **Symlink and ownership guards.** The script refuses to run if the state
+  directory is not root-owned, or if the directory or state file is a symlink or
+  the state file is not a regular file, and writes state atomically through a
+  `mktemp` file rather than a predictable `.tmp` name.
+- **Legacy state is refused, not migrated.** State left by an older version under
+  `/home/monad/.monad-failover` is treated as untrusted: the run stops and asks
+  you to inspect and remove it rather than resuming from it.
+- **`MF_STATE_DIR` override is test-only.** It is honoured only alongside
+  `MF_ALLOW_NONROOT`; a live root run rejects it so the state location cannot be
+  redirected to a user-writable path.
+- Bounded the two outbound `curl` calls with `--max-time` and a response-size cap.
+- Tests: eight new cases cover the injection (a payload that bypasses `set -u`),
+  symlinked dir/file, non-root ownership, legacy-state refusal, the `MF_STATE_DIR`
+  guard, `backup_dir` escaping the backup root, and permission tightening.
+
 ## 1.8.0 — 2026-07-28
 
 - **New monad-sign-name-record CLI.** Upstream replaced `--address ip:port`

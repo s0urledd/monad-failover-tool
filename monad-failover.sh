@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.8.0"
+VERSION="1.9.0"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -116,7 +116,7 @@ public_ip() {
     return
   fi
   local ip
-  ip="$(curl -fsS4 --connect-timeout 10 https://ifconfig.me 2>/dev/null || true)"
+  ip="$(curl -fsS4 --connect-timeout 10 --max-time 20 https://ifconfig.me 2>/dev/null | head -c 64 || true)"
   if valid_ipv4 "$ip"; then
     printf '%s' "$ip"
   fi
@@ -130,16 +130,42 @@ sed_escape_replacement() {
 }
 
 # ── state / resume ─────────────────────────────────────────
-STATE_DIR="$MONAD_HOME/.monad-failover"
+# A resume run reads this state back and acts on it as root: it names the
+# backup directory to restore from, the seq to sign, the IP to publish. So
+# whoever can write it can steer that run. It therefore lives in a root-owned
+# directory of its own, not under $MONAD_HOME, which belongs to the
+# unprivileged monad account the node services run as.
+STATE_DIR_DEFAULT="/var/lib/monad-failover"
+LEGACY_STATE_DIR="$MONAD_HOME/.monad-failover"
+
+# MF_STATE_DIR exists only for the sandboxed test suite, which runs unprivileged
+# and sets MF_ALLOW_NONROOT. Honouring it in a real run would defeat the move:
+# the state directory could be pointed straight back at a user-writable path.
+# It is therefore accepted only when BOTH the process is not root AND the test
+# escape hatch is set; a root run ignores it and dies rather than silently
+# using $STATE_DIR_DEFAULT, so a stray MF_STATE_DIR can never be assumed honoured.
+if [[ $EUID -ne 0 && -n "${MF_ALLOW_NONROOT:-}" ]]; then
+  STATE_DIR="${MF_STATE_DIR:-$STATE_DIR_DEFAULT}"
+else
+  [[ -z "${MF_STATE_DIR:-}" ]] || die \
+    "MF_STATE_DIR is only honoured by the unprivileged test suite." \
+    "In a live (root) run the state directory is fixed at $STATE_DIR_DEFAULT so" \
+    "it cannot be redirected to a location an unprivileged user controls."
+  STATE_DIR="$STATE_DIR_DEFAULT"
+fi
 STATE_FILE="$STATE_DIR/state"
 
 # Rewrite-then-rename instead of sed: values (paths, signatures) need no
-# escaping this way, and the update is atomic.
+# escaping this way, and the update is atomic. The temp file is created by
+# mktemp inside the (root-only) state directory rather than at a predictable
+# name, so it cannot be pre-staged as a symlink pointing somewhere else.
 save_state() {
-  local tmp="${STATE_FILE}.tmp"
+  local tmp
+  tmp="$(mktemp "${STATE_DIR}/.state.XXXXXX")" || die "Could not write to $STATE_DIR"
   grep -v "^${1}=" "$STATE_FILE" 2>/dev/null > "$tmp" || true
   printf '%s=%s\n' "$1" "$2" >> "$tmp"
-  mv "$tmp" "$STATE_FILE"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$STATE_FILE"
 }
 
 load_state() {
@@ -148,9 +174,80 @@ load_state() {
 
 clear_state() { rm -f "$STATE_FILE"; }
 
+# Create or validate the state directory. A live run trusts what it reads back
+# from here, so refuse anything an unprivileged user could have staged: a
+# symlink standing in for the directory or the file, a directory owned by
+# someone else, or a state file that is not a regular file.
+secure_state_dir() {
+  if [[ -L "$STATE_DIR" ]]; then
+    die "$STATE_DIR is a symlink; refusing to use it." \
+      "Remove it and re-run so the directory is created directly."
+  fi
+
+  if [[ ! -d "$STATE_DIR" ]]; then
+    mkdir -p "$STATE_DIR" || die "Could not create $STATE_DIR"
+  fi
+  chmod 700 "$STATE_DIR" || die "Could not secure $STATE_DIR"
+
+  # The root-ownership requirement only makes sense for a root run; the
+  # unprivileged test suite works inside its own tmpdir, owned by whoever runs
+  # it. Gate on EUID, the same condition that fixes the state location.
+  if [[ $EUID -eq 0 ]]; then
+    local owner
+    owner="$(stat -c '%u' "$STATE_DIR" 2>/dev/null || true)"
+    if [[ "$owner" != "0" ]]; then
+      die "$STATE_DIR is not owned by root." \
+        "Resume state must not be writable by the monad service account." \
+        "Fix it with: chown root:root $STATE_DIR && chmod 700 $STATE_DIR"
+    fi
+  fi
+
+  if [[ -L "$STATE_FILE" ]]; then
+    die "$STATE_FILE is a symlink; refusing to read or write through it." \
+      "Remove it. If a run was interrupted, restore this node from" \
+      "$BACKUP_ROOT and start a fresh run."
+  fi
+  if [[ -e "$STATE_FILE" ]]; then
+    if [[ ! -f "$STATE_FILE" ]]; then
+      die "$STATE_FILE is not a regular file; refusing to use it."
+    fi
+    chmod 600 "$STATE_FILE" 2>/dev/null || true
+  fi
+}
+
+# Older versions kept state under $MONAD_HOME, which the monad account can
+# write. That content is not trusted and is deliberately not migrated: a
+# resume driven by it would be a resume driven by whatever wrote it.
+refuse_legacy_state() {
+  local f found=""
+  for f in "$LEGACY_STATE_DIR/state" "$LEGACY_STATE_DIR/promote/state"; do
+    if [[ -e "$f" || -L "$f" ]]; then found="$f"; break; fi
+  done
+  [[ -n "$found" ]] || return 0
+  die "Found state from an older version at $found." \
+    "That path is under $MONAD_HOME and writable by the monad service" \
+    "account, so it is not trusted and is not migrated automatically." \
+    "Review it, then remove the directory:  rm -rf $LEGACY_STATE_DIR" \
+    "If a previous run was interrupted, restore this node from $BACKUP_ROOT" \
+    "and start a fresh run rather than resuming from it."
+}
+
+# Reject a state value whose shape is wrong. Every field below reaches a
+# config file, a signed name record, a path or a shell expansion, so the
+# allowlists are deliberately narrow: no whitespace, no shell or arithmetic
+# metacharacters.
+check_state_field() {
+  local key="$1" val="$2" re="$3"
+  [[ "$val" =~ $re ]] || die \
+    "State file is corrupt or was tampered with: '$key' holds an unexpected value." \
+    "Refusing to resume from it." \
+    "Restore this node from $BACKUP_ROOT if a run was interrupted, remove" \
+    "$STATE_FILE, then start a fresh run."
+}
+
 completed_step() {
   local c; c="$(load_state "last_step")"
-  [[ "$c" =~ ^[0-9]+$ ]] && [[ "$c" -ge "$1" ]]
+  [[ "$c" =~ ^[1-8]$ ]] && [[ "$c" -ge "$1" ]]
 }
 
 # ── guards ─────────────────────────────────────────────────
@@ -490,7 +587,7 @@ check_validator_api() {
   step "VALIDATOR UPTIME CHECK"
   local url resp
   url="$(validator_api_url)"
-  resp="$(curl -fsS --connect-timeout 10 "$url" 2>/dev/null || true)"
+  resp="$(curl -fsS --connect-timeout 10 --max-time 30 "$url" 2>/dev/null | head -c 65536 || true)"
 
   if ! printf '%s' "$resp" | grep -qE '"success": *true'; then
     warn "Validator not visible in the uptime API yet (this can take a few minutes)."
@@ -595,6 +692,12 @@ promote() {
     if [[ -z "$last" ]]; then
       warn "No previous run found. Starting fresh."; RESUME=false
     else
+      # Validate before the arithmetic below, not after: $(( )) evaluates an
+      # array subscript, and a subscript runs command substitution, so an
+      # unchecked value here would execute as root. The range is closed, not
+      # just "digits": an out-of-range value like 999 would satisfy every
+      # completed_step check and skip the whole migration to a fake "complete".
+      check_state_field "last_step" "$last" '^[1-8]$'
       ok "Resuming from step $((last + 1))"
       NETWORK="$(load_state "network")"
       NEW_SEQ="$(load_state "new_seq")"
@@ -606,6 +709,70 @@ promote() {
       SELF_SEQ="$(load_state "self_seq")"
       BENEFICIARY="$(load_state "beneficiary")"
       BACKUP_DIR="$(load_state "backup_dir")"
+
+      CUTOVER_STARTED="$(load_state "cutover_started")"
+      STAGED_SECP_SHA="$(load_state "staged_secp_sha")"
+      STAGED_BLS_SHA="$(load_state "staged_bls_sha")"
+      STAGED_TOML_SHA="$(load_state "staged_toml_sha")"
+
+      # Shapes are narrowed to the real format of each field, not a loose
+      # charset: every one of these reaches a config file, a signed name
+      # record, a URL or a shell expansion. Empty is allowed only where the
+      # field is genuinely optional or not yet set at this step; the presence
+      # checks below then enforce what THIS step must have.
+      check_state_field "network"      "$NETWORK"      '^(mainnet|testnet)?$'
+      check_state_field "new_seq"      "$NEW_SEQ"      '^[0-9]*$'
+      check_state_field "self_seq"     "$SELF_SEQ"     '^[0-9]*$'
+      check_state_field "secp_pub"     "$SECP_PUB"     '^[0-9A-Za-z]*$'
+      check_state_field "bls_pub"      "$BLS_PUB"      '^[0-9A-Za-z]*$'
+      check_state_field "self_sig"     "$SELF_SIG"     '^[0-9A-Za-z]*$'
+      check_state_field "self_address" "$SELF_ADDRESS" '^([0-9.]+:[0-9]+)?$'
+      check_state_field "beneficiary"  "$BENEFICIARY"  '^(0x[0-9A-Fa-f]{40})?$'
+      check_state_field "cutover_started"  "$CUTOVER_STARTED"  '^1?$'
+      check_state_field "staged_secp_sha"  "$STAGED_SECP_SHA"  '^[0-9a-f]{64}$|^$'
+      check_state_field "staged_bls_sha"   "$STAGED_BLS_SHA"   '^[0-9a-f]{64}$|^$'
+      check_state_field "staged_toml_sha"  "$STAGED_TOML_SHA"  '^[0-9a-f]{64}$|^$'
+      check_state_field "ip" "$IP" '^([0-9]{1,3}(\.[0-9]{1,3}){3})?$'
+      if [[ -n "$IP" ]] && ! valid_ipv4 "$IP"; then
+        die "State file is corrupt or was tampered with: 'ip' is not a valid IPv4 address." \
+          "Refusing to resume from it." \
+          "Remove $STATE_FILE and start a fresh run."
+      fi
+
+      # backup_dir is not a restore source: nothing is copied FROM it. It is
+      # the destination the pre-cutover backup was written to, and on resume it
+      # is only shown to the operator as "restore this node's identity from
+      # here" if a later step fails. Validate it anyway: a tampered value would
+      # otherwise send the operator to an attacker-chosen path. String compare,
+      # not a regex, because BACKUP_ROOT is a path whose dots must stay literal.
+      check_state_field "backup_dir" "$BACKUP_DIR" '^[A-Za-z0-9._/-]*$'
+      if [[ -n "$BACKUP_DIR" ]]; then
+        if [[ "$BACKUP_DIR" == *".."* || "$BACKUP_DIR" != "$BACKUP_ROOT"/* ]]; then
+          die "State file is corrupt or was tampered with: 'backup_dir' is not under $BACKUP_ROOT." \
+            "Refusing to resume: recovery messages would point at that path." \
+            "Remove $STATE_FILE and start a fresh run."
+        fi
+      fi
+
+      # Presence is step-dependent. Each field is written by the step named in
+      # its comment (save_state calls), so once that step is behind us the
+      # field must be there; a blank one means the state file was truncated or
+      # tampered with, and resuming past it would sign or publish an empty value.
+      require_state() {
+        [[ -n "$2" ]] || die \
+          "State file is incomplete: '$1' is empty but the run had reached step $last." \
+          "Refusing to resume from a partial state file." \
+          "Restore this node from $BACKUP_ROOT if a run was interrupted, remove" \
+          "$STATE_FILE, then start a fresh run."
+      }
+      [[ "$last" -ge 2 ]] && require_state "network"      "$NETWORK"
+      [[ "$last" -ge 4 ]] && require_state "secp_pub"     "$SECP_PUB"
+      [[ "$last" -ge 4 ]] && require_state "bls_pub"      "$BLS_PUB"
+      [[ "$last" -ge 5 ]] && require_state "new_seq"      "$NEW_SEQ"
+      [[ "$last" -ge 6 ]] && require_state "ip"           "$IP"
+      [[ "$last" -ge 6 ]] && require_state "self_address" "$SELF_ADDRESS"
+      [[ "$last" -ge 6 ]] && require_state "self_sig"     "$SELF_SIG"
+      [[ "$last" -ge 6 ]] && require_state "self_seq"     "$SELF_SEQ"
     fi
   fi
 
@@ -1066,17 +1233,13 @@ fi
 [[ $EUID -eq 0 || -n "${MF_ALLOW_NONROOT:-}" ]] \
   || die "This script must run as root."
 
-mkdir -p "$STATE_DIR"
-
-# Adopt v3 promote state (per-mode dirs) so --resume keeps working across the upgrade
-if [[ ! -f "$STATE_FILE" ]] && [[ -f "$STATE_DIR/promote/state" ]]; then
-  mv "$STATE_DIR/promote/state" "$STATE_FILE"
-fi
-rm -rf "$STATE_DIR/promote" "$STATE_DIR/prepare-standby" "$STATE_DIR/restore-fullnode" 2>/dev/null || true
+refuse_legacy_state
+secure_state_dir
 
 if ! $RESUME && [[ -f "$STATE_FILE" ]]; then
   _last="$(load_state "last_step")"
   if [[ -n "$_last" ]]; then
+    check_state_field "last_step" "$_last" '^[1-8]$'
     # Once a cutover has begun, "start fresh" is no longer safe: it would
     # re-snapshot (and re-reference) a possibly half-swapped identity as this
     # node's own. The interrupted run must be finished with --resume instead.

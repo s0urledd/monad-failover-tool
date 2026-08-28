@@ -17,9 +17,9 @@ Pinned to a release tag, so what you download never changes after the fact:
 ```bash
 cd /home/monad
 curl -fsSLo monad-failover.sh \
-  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.8.0/monad-failover.sh
+  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.0/monad-failover.sh
 
-echo "a6b5a4eae5d08637ea4ac11d207a7ef5b98e8adcb69c24ffe160018d69677be7  monad-failover.sh" | sha256sum -c -
+echo "f545fc205f576c296165179e500baf1c9c356042b4cf39b3efb7d8a67d5abef4  monad-failover.sh" | sha256sum -c -
 chmod +x monad-failover.sh
 ```
 
