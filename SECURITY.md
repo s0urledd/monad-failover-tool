@@ -90,8 +90,21 @@ every point it can be interrupted is recoverable:
   it again there, and only then renames it, so the final step is a rename
   within one filesystem and cannot be interrupted half-written. A move from the
   staging filesystem straight to the config filesystem would be a copy, not an
-  atomic rename. The live file is checked once more afterwards, so what was
-  verified is provably what landed.
+  atomic rename. The temporary file is created and written in a single open
+  with `O_CREAT|O_EXCL`: creating it and then reopening it by name would leave
+  a window in which the name could be replaced with a symlink and the write
+  would follow it, and no checksum afterwards can undo a write to the wrong
+  file. It is created `0600` by the script's umask, so there is no
+  chmod-by-path either. The live file is checked once more after the rename.
+- One boundary is not fully closed and is worth stating plainly: the
+  destination directory belongs to the `monad` account, so the rename target is
+  a path that account can manipulate. The single-open write removes the
+  write-through-a-symlink hazard, and the check after the rename means a
+  substitution is detected and the run stops before the services start, but a
+  shell cannot rename by file descriptor, so detection rather than prevention
+  is the guarantee for that last step. Operators who want the hazard gone
+  entirely can make the config directory itself root-owned, with the `monad`
+  account holding read and execute only.
 - The units are masked before the swap and unmasked only once every file is in
   place. A plain stop is not enough: the units are normally enabled, so a reboot
   between two renames would otherwise bring the node up with a mixed identity.
@@ -104,6 +117,10 @@ every point it can be interrupted is recoverable:
   stages. An interruption after the swap resumes into the bring-up, so the units
   cannot be left masked with nothing to unmask them. An unmask that does not
   take effect is never recorded as done.
+- Before the units are unmasked and started, all three live files are checked
+  against the recorded checksums again. The swap may have happened in an earlier
+  run, and anything that changed in between must not be started: the run stops
+  and points at the backup instead.
 - The whole live run holds an exclusive `flock`. A second run is refused before
   it reads or writes any state.
 - Once a cutover has begun that fact is recorded, and a later run without
@@ -117,7 +134,10 @@ verification.
 
 The sequence suggestion comes from Monad Foundation's published validator data.
 It is read with a structural pass that tracks string state and brace depth, so
-every field is taken from inside the object it belongs to. A flat text scan
+every field is taken from inside the object it belongs to, and the whole
+document must be balanced before any of it is used. Object boundaries alone are
+not enough: a response truncated after the target object would otherwise still
+parse and yield a sequence. A flat text scan
 would attribute a neighbouring validator's sequence to your key as soon as the
 publisher reorders fields. The entry must match your SECP key exactly and be
 unique, its BLS key must match the key you imported, and the snapshot's network

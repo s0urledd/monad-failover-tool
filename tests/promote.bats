@@ -1377,3 +1377,60 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"no BLS key"* ]]
 }
+
+@test "resume: a live file changed after the swap stops the services coming up" {
+  make_healthy_env
+  local cfg="$MONAD_HOME/monad-bft/config"
+  printf 'MOCK-KEYSTORE ikm=%s pw=testpass\n' "$SECP_IKM" > "$cfg/id-secp"
+  printf 'MOCK-KEYSTORE ikm=%s pw=testpass\n' "$BLS_IKM"  > "$cfg/id-bls"
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  cat > "$MF_STATE_DIR/state" <<EOF
+last_step=6
+network=testnet
+secp_pub=0xSECP1111111111111111111111111111111111111111
+bls_pub=0xBLS2222222222222222222222222222222222222222
+new_seq=8
+ip=203.0.113.7
+self_address=203.0.113.7:8000
+self_sig=abcd
+self_seq=8
+self_auth_port=8001
+cutover_started=1
+swap_done=1
+mask_observed=1
+premasked_units=
+services_masked=1
+staged_secp_sha=$(sha256sum "$cfg/id-secp" | awk '{print $1}')
+staged_bls_sha=$(sha256sum "$cfg/id-bls" | awk '{print $1}')
+staged_toml_sha=$(sha256sum "$cfg/node.toml" | awk '{print $1}')
+EOF
+  systemctl mask monad-bft monad-execution monad-rpc
+  rm -f "$MOCK_LOG.active"
+  # something replaced the placed key between the swap and this resume
+  echo "tampered" >> "$cfg/id-secp"
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no longer matches what the cutover placed"* ]]
+  # nothing was started, and the units stay masked
+  [ ! -f "$MOCK_LOG.active" ]
+  [ "$(systemctl is-enabled monad-bft)" = "masked" ]
+}
+
+@test "foundation: a truncated snapshot is not used" {
+  make_healthy_env
+  export MOCK_FOUNDATION_TRUNCATE=1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not complete JSON"* ]]
+  grep -q '^self_record_seq_num = 8' "$MONAD_HOME/monad-bft/config/node.toml"
+}

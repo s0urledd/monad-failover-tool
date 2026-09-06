@@ -17,6 +17,7 @@ for arg in "$@"; do
     #   MOCK_FOUNDATION_NET      snapshot labelled with a different network
     #   MOCK_FOUNDATION_CHAIN    snapshot carrying the wrong chain_id
     #   MOCK_FOUNDATION_REORDER  valid JSON with peer listed before secp
+    #   MOCK_FOUNDATION_TRUNCATE cut off after the target object closes
     #   MOCK_FOUNDATION_SEQ      published record_seq_num (default 7)
     [[ -n "${MOCK_FOUNDATION_FAIL:-}" ]] && exit 22
     epoch="$(date +%s)"
@@ -41,8 +42,13 @@ for arg in "$@"; do
     other="{\"id\": 2, \"name\": \"Other\", \"secp\": \"0xSECPffffffffffffffffffffffffffffffffffffff\", \"bls\": \"0xBLSf\", \"peer\": {\"record_seq_num\": 3}}"
     body="$entry, $other"
     [[ -n "${MOCK_FOUNDATION_DUP:-}" ]] && body="$entry, $entry"
-    printf '{"chain_id": "%s", "count": 2, "expected_version": "0.16.1", "fetched_at_epoch": %s, "network": "%s", "validators": [%s]}' \
-      "$chain" "$epoch" "$net" "$body"
+    if [[ -n "${MOCK_FOUNDATION_TRUNCATE:-}" ]]; then
+      printf '{"chain_id": "%s", "count": 2, "expected_version": "0.16.1", "fetched_at_epoch": %s, "network": "%s", "validators": [%s, {"id": 3, "secp": "0xcut' \
+        "$chain" "$epoch" "$net" "$entry"
+    else
+      printf '{"chain_id": "%s", "count": 2, "expected_version": "0.16.1", "fetched_at_epoch": %s, "network": "%s", "validators": [%s]}' \
+        "$chain" "$epoch" "$net" "$body"
+    fi
     exit 0
   fi
   if [[ "$arg" == *huginn.tech* ]]; then

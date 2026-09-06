@@ -32,7 +32,7 @@ Pinned to a release tag, so what you download never changes after the fact:
 curl -fsSLo /usr/local/bin/monad-failover \
   https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.2/monad-failover.sh
 
-echo "2da555a171e7674d4a5cdafa5813e7a57299a646f3bfe020fab79d0c9bb1bd31  /usr/local/bin/monad-failover" | sha256sum -c -
+echo "046b45df9d343a8bb82c09ca5546c864bf43a715bf0f31050850e4495a39b90a  /usr/local/bin/monad-failover" | sha256sum -c -
 chmod 755 /usr/local/bin/monad-failover
 ```
 

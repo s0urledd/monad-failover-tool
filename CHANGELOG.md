@@ -37,6 +37,17 @@ real v0.16.1 signer capture. Confirmed findings are fixed; one was rejected.
   entry must be unique, its BLS key must match, and the snapshot's network and
   chain id must match this node's; a validator with no published record stays
   unknown rather than zero.
+- **The placed identity is re-checked before the services start.** A resume that
+  finds the swap already done now verifies all three live files against the
+  recorded checksums before unmasking anything, so a key or config changed
+  between the swap and the resume cannot be started.
+- **The snapshot must be complete JSON.** Tracking object boundaries is not
+  enough on its own: a response truncated after the target object still parsed
+  and yielded a sequence. The whole document is now required to be balanced.
+- **Placement writes through a single open.** The temporary file in the
+  destination directory is created and written with `O_CREAT|O_EXCL` rather than
+  created and reopened by name, closing the window in which the name could be
+  replaced with a symlink and the write would follow it.
 - Rejected: the post-cutover health check "passing while the node is not synced"
   is by design. A freshly promoted node needs time to catch up, so requiring
   in-sync immediately would fail every successful migration. The preflight sync
@@ -45,7 +56,7 @@ real v0.16.1 signer capture. Confirmed findings are fixed; one was rejected.
 - Docs: README states the verified signer version and what the tool assembles;
   SECURITY.md covers the staging location, the placement and masking stages, and
   how the snapshot is read.
-- Tests: 70 cases. New coverage for the real signer shape and the mock's parity
+- Tests: 72 cases. New coverage for the real signer shape and the mock's parity
   with it, mismatched and missing port lines, both mask interruption windows,
   reordered snapshot JSON, wrong chain id, and an entry with no BLS key.
 

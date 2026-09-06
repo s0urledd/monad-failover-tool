@@ -771,8 +771,20 @@ foundation_seq_lookup() {
       return cnt
     }
     function field(obj,name,   K,V,c,j){ c=members(obj,K,V); for(j=1;j<=c;j++) if(K[j]==name) return V[j]; return "" }
+    # Object boundaries are not enough on their own: a document truncated after
+    # the target object still parses. Require the whole thing to be balanced.
+    function doc_ok(t,   i,n,c,depth,instr,esc,seen){
+      n=length(t); depth=0; instr=0; esc=0; seen=0
+      for(i=1;i<=n;i++){ c=substr(t,i,1)
+        if(instr){ if(esc)esc=0; else if(c=="\\")esc=1; else if(c=="\"")instr=0; continue }
+        if(c=="\""){instr=1;continue}
+        if(c=="{"||c=="["){depth++;seen=1}
+        else if(c=="}"||c=="]"){depth--; if(depth<0) return 0} }
+      return (instr==0 && depth==0 && seen==1)
+    }
     { doc = doc $0 }
     END{
+      if(!doc_ok(doc)){ print "BAD|incomplete"; exit }
       # header fields, read as depth-1 members of the document
       net=field(doc,"network"); chain=field(doc,"chain_id"); fetched=field(doc,"fetched_at_epoch")
       vals=field(doc,"validators")
@@ -797,6 +809,7 @@ foundation_seq_lookup() {
         ')" || { FOUND_NOTE="snapshot unreachable"; return 1; }
 
   [[ -n "$out" ]] || { FOUND_NOTE="snapshot unreachable"; return 1; }
+  case "$out" in BAD\|*) FOUND_NOTE="snapshot is not complete JSON"; return 1 ;; esac
 
   hdr="$(printf '%s\n' "$out" | grep -m1 '^HDR|' || true)"
   hit="$(printf '%s\n' "$out" | grep -m1 '^HIT|' || true)"
@@ -943,10 +956,19 @@ place_verified() {
     return 0
   fi
 
+  # The destination directory belongs to the monad account, so the temporary
+  # file is created and written in ONE open with O_CREAT|O_EXCL (noclobber).
+  # Creating it and then reopening it by name would leave a window in which the
+  # name could be replaced with a symlink and the write would follow it — a
+  # checksum afterwards cannot undo a write to the wrong file. With O_EXCL the
+  # open simply fails if anything is already there. The script's umask makes it
+  # 0600 at creation, so there is no chmod-by-path to follow a swap either.
   local tmp
-  tmp="$(mktemp "${live}.mf.XXXXXX")" || die "Could not create a temporary file next to $live"
-  if ! cat "$staged" > "$tmp"; then rm -f "$tmp"; return 1; fi
-  chmod 600 "$tmp" 2>/dev/null || true
+  tmp="${live}.mf-$$-${RANDOM}${RANDOM}"
+  if ! ( set -o noclobber; cat "$staged" > "$tmp" ) 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
   if [[ "$(file_sha "$tmp")" != "$want" ]]; then
     rm -f "$tmp"
     die "$label did not copy intact — refusing to place it." \
@@ -1006,6 +1028,30 @@ unmask_monad_services() {
       "masked. Unmask them, then finish with: $0 --resume"
   fi
   save_state "services_masked" "0"
+}
+
+# One live file must still match what the cutover placed.
+check_live_file() {
+  local path="$1" state_key="$2" label="$3"
+  local want; want="$(load_state "$state_key")"
+  [[ "$want" =~ ^[0-9a-f]{64}$ ]] || die \
+    "No recorded checksum for $label; refusing to start the services." \
+    "Restore this node from ${BACKUP_DIR:-$BACKUP_ROOT} and start a fresh run."
+  [[ -L "$path" ]] && die "$path is a symlink; refusing to start the services."
+  [[ -f "$path" && "$(file_sha "$path")" == "$want" ]] || die \
+    "$label no longer matches what the cutover placed." \
+    "Refusing to start the services with an identity that changed since." \
+    "Restore this node from ${BACKUP_DIR:-$BACKUP_ROOT} and start a fresh run."
+}
+
+# The swap may have happened in an earlier run, possibly long ago. Nothing is
+# started until all three live files still match what was placed.
+verify_live_identity() {
+  step "VERIFY PLACED IDENTITY"
+  check_live_file "$SECP_KEY"  staged_secp_sha "the SECP key"
+  check_live_file "$BLS_KEY"   staged_bls_sha  "the BLS key"
+  check_live_file "$NODE_TOML" staged_toml_sha "node.toml"
+  ok "Live identity matches what was placed"
 }
 
 # Units the operator had masked before this run are left alone, so they are not
@@ -1464,7 +1510,7 @@ promote() {
   fi
 
   # ── 7b. Unmask and start (resumable on its own) ──
-  # Identity is consistent now, so it is safe for the units to come back.
+  verify_live_identity
   unmask_monad_services
   local svcs=(); mapfile -t svcs < <(startable_services)
   if [[ "${#svcs[@]}" -eq 0 ]]; then
