@@ -6,8 +6,8 @@
 #   https://docs.monad.xyz/node-ops/node-recovery/node-migration
 #
 # Usage:
-#   ./monad-failover.sh [--backup-dir PATH] [--resume]
-#   ./monad-failover.sh --dry-run   # read-only preflight, changes nothing
+#   monad-failover [--backup-dir PATH] [--resume]
+#   monad-failover --dry-run   # read-only preflight, changes nothing
 
 set -euo pipefail
 
@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.9.0"
+VERSION="1.9.1"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -615,7 +615,7 @@ post_verify() {
       "$svc is not active after cutover." \
       "Check:  journalctl -xeu $svc" \
       "Start:  systemctl start ${MONAD_SERVICES[*]}" \
-      "Finish: ./monad-failover.sh --resume"
+      "Finish: $0 --resume"
   done
   ok "All services active"
   if command -v monad-status >/dev/null 2>&1; then
@@ -1073,18 +1073,18 @@ promote() {
 
     place_staged "$SECP_KEY_NEW" "$SECP_KEY" "SECP key" || die \
       "Could not place the SECP key. Services are stopped; nothing has changed." \
-      "Fix the cause, then continue with: ./monad-failover.sh --resume"
+      "Fix the cause, then continue with: $0 --resume"
     if ! place_staged "$BLS_KEY_NEW" "$BLS_KEY" "BLS key"; then
       die "CRITICAL: the SECP key was placed but the BLS key was not." \
         "This node now has a mismatched identity. Do NOT start the services." \
-        "Fix the cause, then continue with: ./monad-failover.sh --resume" \
+        "Fix the cause, then continue with: $0 --resume" \
         "(it finishes placing the remaining files). To roll back instead," \
         "restore this node's previous identity from: ${BACKUP_DIR:-$BACKUP_ROOT}"
     fi
     if ! place_staged "$NODE_TOML_NEW" "$NODE_TOML" "node.toml"; then
       die "CRITICAL: the keys were placed but node.toml was not." \
         "Do NOT start the services with this key/config mismatch." \
-        "Fix the cause, then continue with: ./monad-failover.sh --resume" \
+        "Fix the cause, then continue with: $0 --resume" \
         "(it finishes placing node.toml). To roll back instead, restore" \
         "this node's previous identity from: ${BACKUP_DIR:-$BACKUP_ROOT}"
     fi
@@ -1101,7 +1101,7 @@ promote() {
         "The swap is done — do NOT re-run the cutover." \
         "Diagnose: journalctl -xeu monad-bft" \
         "Start when fixed: systemctl start ${MONAD_SERVICES[*]}" \
-        "Then finish up:  ./monad-failover.sh --resume"
+        "Then finish up:  $0 --resume"
     fi
     ok "Services started"
   fi
@@ -1115,7 +1115,7 @@ promote() {
       die "Key backup export failed after an otherwise successful promotion." \
         "The validator itself is live — nothing else is wrong. Previous backup" \
         "copies are preserved as *.bak in $BACKUP_ROOT." \
-        "Retry just this export with: ./monad-failover.sh --resume"
+        "Retry just this export with: $0 --resume"
     fi
     save_state "last_step" "8"
   fi
@@ -1253,8 +1253,8 @@ usage() {
   echo "monad-failover v${VERSION} — promote a synced Monad full node to validator"
   echo
   echo "Usage:"
-  echo "  ./monad-failover.sh [--backup-dir PATH] [--resume]"
-  echo "  ./monad-failover.sh --dry-run"
+  echo "  $0 [--backup-dir PATH] [--resume]"
+  echo "  $0 --dry-run"
   echo
   echo "Flags:"
   echo "  --dry-run     Read-only preflight: run every check, change nothing"
@@ -1308,7 +1308,7 @@ if ! $RESUME && [[ -f "$STATE_FILE" ]]; then
     # node's own. The interrupted run must be finished with --resume instead.
     if [[ "$(load_state "cutover_started")" == "1" ]]; then
       die "A previous run reached cutover — starting fresh is not safe now." \
-        "Finish the interrupted run instead: ./monad-failover.sh --resume" \
+        "Finish the interrupted run instead: $0 --resume" \
         "(Only if you have manually restored this node and are sure, delete" \
         "$STATE_FILE to allow a fresh run.)"
     fi
@@ -1317,7 +1317,7 @@ if ! $RESUME && [[ -f "$STATE_FILE" ]]; then
     if confirm_yn "  Start fresh?"; then
       clear_state
     else
-      echo "  Use: ./monad-failover.sh --resume"
+      echo "  Use: $0 --resume"
       exit 0
     fi
   fi

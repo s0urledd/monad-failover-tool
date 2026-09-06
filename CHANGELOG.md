@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.9.1 — 2026-09-06
+
+- The install location is now root-owned `/usr/local/bin/monad-failover`,
+  matching how Monad distributes its own helper scripts. The tool runs as root,
+  so it should not live under `/home/monad`, where the unprivileged `monad`
+  service account could swap the file between the install-time checksum check
+  and a later run. Same trust boundary as the 1.9.0 state move, applied to the
+  script itself.
+- Recovery hints print the path the script was invoked as instead of a
+  hard-coded `./monad-failover.sh`, so the `--resume` instructions stay correct
+  for an installed copy and a repo checkout alike.
+
 ## 1.9.0 — 2026-08-28
 
 Security hardening of the resume state, which a live run reads back and acts on

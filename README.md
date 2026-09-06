@@ -15,16 +15,19 @@ keep copies off-server).
 Pinned to a release tag, so what you download never changes after the fact:
 
 ```bash
-cd /home/monad
-curl -fsSLo monad-failover.sh \
-  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.0/monad-failover.sh
+curl -fsSLo /usr/local/bin/monad-failover \
+  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.1/monad-failover.sh
 
-echo "7e02d451a2007a227afecad06b5bc6602e7fb3f6a2594a2d34bb976efce68235  monad-failover.sh" | sha256sum -c -
-chmod +x monad-failover.sh
+echo "8a08f889082457599b867a0ebf4eb290a28d253f90f4eca1022a7455164a03ac  /usr/local/bin/monad-failover" | sha256sum -c -
+chmod 755 /usr/local/bin/monad-failover
 ```
 
-`sha256sum -c` prints `monad-failover.sh: OK` and fails loudly on any mismatch,
-so there is nothing to eyeball.
+`sha256sum -c` prints `/usr/local/bin/monad-failover: OK` and fails loudly on any
+mismatch, so there is nothing to eyeball.
+
+The tool runs as root, so it lives in root-owned `/usr/local/bin` rather than
+under `/home/monad`, which the `monad` service account can write. The resume
+state is kept out of that directory for the same reason.
 
 ## Usage
 
@@ -32,8 +35,8 @@ On a full node synced to the tip, with your backup files copied over, start with
 dry run. It checks everything and changes nothing:
 
 ```bash
-./monad-failover.sh --dry-run   # read-only preflight
-./monad-failover.sh             # live run
+monad-failover --dry-run   # read-only preflight
+monad-failover             # live run
 ```
 
 | Flag | Effect |

@@ -45,7 +45,9 @@ that file can steer the run, so the file must not be writable by anyone but root
 
 For that reason the state lives in `/var/lib/monad-failover`, owned `root:root`
 and mode `0700`, with the state file itself `0600`. It is not under
-`/home/monad`, which the unprivileged `monad` service account owns. On startup the script:
+`/home/monad`, which the unprivileged `monad` service account owns. The install
+instructions place the script itself in root-owned `/usr/local/bin` on the same
+grounds. On startup the script:
 
 - refuses to run if the state directory is not owned by root, or if the
   directory or the state file is a symlink, or the state file is not a regular
@@ -68,9 +70,9 @@ means an interrupted run and a stale file: restore the node from
 
 ## Verifying what you run
 
-- Compare `sha256sum monad-failover.sh` against the checksum in the README. CI
-  fails any change where the two drift apart.
-- Run `./monad-failover.sh --dry-run` first. It performs every preflight check
+- Compare `sha256sum /usr/local/bin/monad-failover` against the checksum in the
+  README. CI fails any change where the README and the repo script drift apart.
+- Run `monad-failover --dry-run` first. It performs every preflight check
   read-only and changes nothing.
 - The script is short enough to read before running. Please do.
 
