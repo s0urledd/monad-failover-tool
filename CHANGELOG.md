@@ -1,5 +1,65 @@
 # Changelog
 
+## 1.9.2 — 2026-09-06
+
+Independent verification of a pre-release audit against the current code, the
+official Monad docs and config, the Foundation's published validator data, and a
+real v0.16.1 signer capture. Confirmed findings are fixed; one was rejected.
+
+- **Signer output.** Verified against monad v0.16.1: the signer prints
+  `self_address` as a bare IP with the ports on their own lines
+  (`self_tcp_port`, `self_udp_port`, `self_auth_port`), while the official
+  `node.toml` carries one combined `self_address = "IP:PORT"` plus a separate
+  `self_auth_port`. The tool now assembles the address from the emitted IP and
+  TCP port, refuses to guess when the TCP and UDP ports differ or a line is
+  missing, and carries `self_auth_port`, the sequence and the signature across
+  unchanged. The captured output is kept as a test fixture and the mock is
+  checked against it field by field.
+- **Staging moved out of the config directory.** Staged keys and config now live
+  in `/var/lib/monad-failover/staging` (`root:root`, `0700`) instead of the
+  `monad`-owned config directory, where a staged file could be replaced between
+  the checksum check and the rename. Placement copies the verified content into
+  the destination directory, re-checks it there, renames within that one
+  filesystem, and verifies the live file afterwards, so a move across
+  filesystems can no longer stand in for an atomic rename.
+- **Two interruption windows around masking closed.** What was already masked is
+  now recorded before the first mask is applied, so an interruption in between
+  cannot make a resume read this run's own masks as the operator's. Placing the
+  files and bringing the services up are separately resumable stages, so an
+  interruption after the swap resumes into the bring-up instead of skipping it
+  and leaving the units masked. An unmask that does not take effect is no longer
+  recorded as done, and units the operator had masked are left alone rather than
+  started.
+- **Foundation snapshot read structurally.** The sequence lookup now tracks
+  string state and brace depth so every field is read from inside its own
+  validator object. The previous flat scan attributed a neighbouring
+  validator's sequence to the target key as soon as fields were reordered. The
+  entry must be unique, its BLS key must match, and the snapshot's network and
+  chain id must match this node's; a validator with no published record stays
+  unknown rather than zero.
+- **The placed identity is re-checked before the services start.** A resume that
+  finds the swap already done now verifies all three live files against the
+  recorded checksums before unmasking anything, so a key or config changed
+  between the swap and the resume cannot be started.
+- **The snapshot must be complete JSON.** Tracking object boundaries is not
+  enough on its own: a response truncated after the target object still parsed
+  and yielded a sequence. The whole document is now required to be balanced.
+- **Placement writes through a single open.** The temporary file in the
+  destination directory is created and written with `O_CREAT|O_EXCL` rather than
+  created and reopened by name, closing the window in which the name could be
+  replaced with a symlink and the write would follow it.
+- Rejected: the post-cutover health check "passing while the node is not synced"
+  is by design. A freshly promoted node needs time to catch up, so requiring
+  in-sync immediately would fail every successful migration. The preflight sync
+  gate is the hard one, and an un-caught-up node is reported as verification
+  pending rather than success.
+- Docs: README states the verified signer version and what the tool assembles;
+  SECURITY.md covers the staging location, the placement and masking stages, and
+  how the snapshot is read.
+- Tests: 72 cases. New coverage for the real signer shape and the mock's parity
+  with it, mismatched and missing port lines, both mask interruption windows,
+  reordered snapshot JSON, wrong chain id, and an entry with no BLS key.
+
 ## 1.9.1 — 2026-09-06
 
 - The install location is now root-owned `/usr/local/bin/monad-failover`,

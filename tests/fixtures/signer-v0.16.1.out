@@ -1,0 +1,6 @@
+self_address = "203.0.113.7"
+self_tcp_port = 8000
+self_udp_port = 8000
+self_record_seq_num = 2
+self_auth_port = 8001
+self_name_record_sig = "15e06d24aebe1282894f07779e3f6d04941d14343387f430bcc7fcf3d88401c86eccc7d378468e2cfc4cbf8daa9fa5f63e705c229177093734a209eb8acdfff801"

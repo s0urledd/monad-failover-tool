@@ -26,6 +26,8 @@ setup() {
   export PATH="$REPO_ROOT/tests/mocks:$PATH"
   export MF_ALLOW_NONROOT=1
   export MF_HEALTH_WAIT=0
+  # post-cutover sync now gets a bounded window; keep the suite instant.
+  export MF_SYNC_WAIT=0
   mkdir -p "$MONAD_HOME/monad-bft/config" "$BACKUP_ROOT"
   touch "$MOCK_LOG"
 }
@@ -127,7 +129,7 @@ y
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-2
+8
 STOPPED
 y
 EOF
@@ -144,14 +146,14 @@ EOF
   # validator keys swapped in, staging files gone
   grep -q "ikm=$SECP_IKM" "$cfg/id-secp"
   grep -q "ikm=$BLS_IKM" "$cfg/id-bls"
-  [ ! -f "$cfg/id-secp.new" ]
-  [ ! -f "$cfg/id-bls.new" ]
+  [ ! -f "$MF_STATE_DIR/staging/id-secp.new" ]
+  [ ! -f "$MF_STATE_DIR/staging/id-bls.new" ]
 
   # node.toml fully patched; seq flows verbatim: user enters the FINAL value 2
   # → script passes 2 → signer emits 2 → node.toml has 2 (no math anywhere)
   grep -q '^beneficiary = "0xBEEF00000000000000000000000000000000BEEF"' "$cfg/node.toml"
   grep -q '^node_name = "validator-one"' "$cfg/node.toml"
-  grep -q '^self_record_seq_num = 2' "$cfg/node.toml"
+  grep -q '^self_record_seq_num = 8' "$cfg/node.toml"
   grep -q '^self_address = "203.0.113.7:8000"' "$cfg/node.toml"
   grep -q '^enable_publisher = true' "$cfg/node.toml"
   grep -q '^enable_client = true' "$cfg/node.toml"
@@ -196,13 +198,13 @@ y
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-2
+8
 STOPPED
 y
 EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"this monad version increments it"* ]]
-  grep -q '^self_record_seq_num = 3' "$MONAD_HOME/monad-bft/config/node.toml"
+  grep -q '^self_record_seq_num = 9' "$MONAD_HOME/monad-bft/config/node.toml"
 }
 
 @test "signer emitting a LOWER seq aborts before cutover (stale-seq guard)" {
@@ -215,7 +217,7 @@ y
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-2
+8
 EOF
   [ "$status" -eq 1 ]
   [[ "$output" == *"lower than the requested"* ]]
@@ -232,7 +234,7 @@ y
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-2
+8
 STOPPED
 y
 EOF
@@ -270,7 +272,7 @@ y
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-2
+8
 yes
 EOF
   [ "$status" -eq 1 ]
@@ -285,7 +287,7 @@ EOF
   ! grep -q "0xBEEF00000000000000000000000000000000BEEF" "$cfg/node.toml"
   ! grep -q '^enable_publisher = true' "$cfg/node.toml"
   # all changes live only in the staging copy
-  grep -q '^node_name = "validator-one"' "$cfg/node.toml.new"
+  grep -q '^node_name = "validator-one"' "$MF_STATE_DIR/staging/node.toml.new"
 }
 
 @test "service crashing right after start is caught, then resume completes" {
@@ -298,14 +300,14 @@ y
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-2
+8
 STOPPED
 y
 EOF
   [ "$status" -eq 1 ]
   [[ "$output" == *"not active after cutover"* ]]
   # cutover itself is done and recorded; state kept for --resume
-  grep -q "last_step=7" "$MF_STATE_DIR/state"
+  grep -q "swap_done=1" "$MF_STATE_DIR/state"
 
   unset MOCK_CRASH_AFTER_START
   touch "$MOCK_LOG.active"   # operator fixed it; services are up again
@@ -339,7 +341,7 @@ $BLS_IKM
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-1
+8
 STOPPED
 y
 EOF
@@ -361,7 +363,7 @@ y
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-1
+8
 STOPPED
 y
 EOF
@@ -372,19 +374,15 @@ EOF
   # keys AND config already swapped; staging consumed; state advanced
   grep -q "ikm=$SECP_IKM" "$cfg/id-secp"
   grep -q '^node_name = "validator-one"' "$cfg/node.toml"
-  [ ! -f "$cfg/id-secp.new" ]
-  [ ! -f "$cfg/node.toml.new" ]
-  grep -q "last_step=7" "$MF_STATE_DIR/state"
+  [ ! -f "$MF_STATE_DIR/staging/id-secp.new" ]
+  [ ! -f "$MF_STATE_DIR/staging/node.toml.new" ]
+  grep -q "swap_done=1" "$MF_STATE_DIR/state"
 
-  # Resuming while services are still down must be refused by the health gate.
-  run bash "$SCRIPT" --resume </dev/null
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"not active after cutover"* ]]
-
-  # Operator starts the services (per the printed instructions), then resumes.
-  touch "$MOCK_LOG.active"
+  # Bringing the services up is its own resumable stage: --resume retries just
+  # that, without repeating the swap.
   run bash "$SCRIPT" --resume </dev/null
   [ "$status" -eq 0 ]
+  [[ "$output" == *"already swapped by an earlier attempt"* ]]
   [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
   [ ! -f "$MF_STATE_DIR/state" ]
 }
@@ -404,10 +402,18 @@ ip=203.0.113.7
 self_address=203.0.113.7:8000
 self_sig=abcd
 self_seq=2
+self_auth_port=8001
 beneficiary=0xBEEF00000000000000000000000000000000BEEF
 backup_dir=$BACKUP_ROOT/failover-x
 EOF
-  : > "$MONAD_HOME/monad-bft/config/id-secp.new"   # only one staging key
+  mkdir -p "$MF_STATE_DIR/staging"; chmod 700 "$MF_STATE_DIR/staging"
+  : > "$MF_STATE_DIR/staging/id-secp.new"   # only one staging key
+  # the manifest binds what was confirmed; secp matches, bls was never staged
+  {
+    echo "staged_secp_sha=$(sha256sum "$MF_STATE_DIR/staging/id-secp.new" | awk '{print $1}')"
+    echo "staged_bls_sha=$(printf 'b%.0s' {1..64})"
+    echo "staged_toml_sha=$(printf 'c%.0s' {1..64})"
+  } >> "$MF_STATE_DIR/state"
 
   run bash "$SCRIPT" --resume <<EOF
 STOPPED
@@ -429,7 +435,7 @@ y
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-1
+8
 STOPPED
 y
 EOF
@@ -451,7 +457,7 @@ y
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-2
+8
 STOPPED
 y
 EOF
@@ -463,7 +469,7 @@ EOF
   # secp already swapped, bls still the old full-node key, its staging intact
   grep -q "ikm=$SECP_IKM" "$cfg/id-secp"
   grep -q "ikm=8888" "$cfg/id-bls"
-  [ -f "$cfg/id-bls.new" ]
+  [ -f "$MF_STATE_DIR/staging/id-bls.new" ]
   grep -q "last_step=6" "$MF_STATE_DIR/state"
 
   # --resume finishes the interrupted cutover: the placed secp is recognized
@@ -502,6 +508,7 @@ ip=203.0.113.7
 self_address=203.0.113.7:8000
 self_sig=abcd
 self_seq=2
+self_auth_port=8001
 beneficiary=0xBEEF00000000000000000000000000000000BEEF
 backup_dir=$BACKUP_ROOT/failover-x
 staged_secp_sha=$(sha256sum "$cfg/id-secp" | awk '{print $1}')
@@ -551,7 +558,7 @@ y
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-2
+8
 STOPPED
 y
 EOF
@@ -559,7 +566,7 @@ EOF
   [[ "$output" == *"Key backup export failed"* ]]
   [[ "$output" == *"--resume"* ]]
   # the promotion itself happened; state kept at 7 so --resume lands in step 8
-  grep -q "last_step=7" "$MF_STATE_DIR/state"
+  grep -q "swap_done=1" "$MF_STATE_DIR/state"
   # the old backup was preserved, no truncated replacement left behind
   ls "$BACKUP_ROOT"/secp-backup.*.bak >/dev/null
   [ ! -f "$BACKUP_ROOT/secp-backup" ]
@@ -582,7 +589,7 @@ y
 y
 0xBEEF00000000000000000000000000000000BEEF
 validator-one
-2
+8
 STOPPED
 y
 EOF
@@ -752,6 +759,7 @@ ip=
 self_address=
 self_sig=
 self_seq=
+self_auth_port=8001
 EOF
   run bash "$SCRIPT" --resume </dev/null
   [ "$status" -eq 1 ]
@@ -819,6 +827,7 @@ ip=203.0.113.7
 self_address=203.0.113.7:8000
 self_sig=abcd
 self_seq=8
+self_auth_port=8001
 cutover_started=1
 staged_secp_sha=$(printf 'a%.0s' {1..64})
 staged_bls_sha=$(printf 'b%.0s' {1..64})
@@ -827,4 +836,601 @@ EOF
   run bash "$SCRIPT" --resume </dev/null
   # it gets past the consistency gate; it does not die with "inconsistent"
   [[ "$output" != *"inconsistent"* ]]
+}
+
+# ── signer output compatibility ────────────────────────────
+# monad 0.16.x splits the signed address across self_ip / self_tcp_port /
+# self_udp_port, while node.toml still wants one combined self_address. The
+# mock emits the split form by default; the combined form is the older shape.
+
+@test "signer: address and tcp port are combined into self_address" {
+  make_healthy_env
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  grep -q '^self_address = "203.0.113.7:8000"' "$MONAD_HOME/monad-bft/config/node.toml"
+  grep -q '^self_auth_port = 8001' "$MONAD_HOME/monad-bft/config/node.toml"
+}
+
+@test "signer: the mock matches the captured v0.16.1 output field for field" {
+  # guards against the mock drifting away from the real binary's shape
+  run env MOCK_LOG=/dev/null monad-sign-name-record \
+    --ip 203.0.113.7 --tcp-port 8000 --udp-port 8000 \
+    --authenticated-udp-port 8001 --self-record-seq-num 2 \
+    --keystore-path x --password y
+  [ "$status" -eq 0 ]
+  local got want
+  got="$(printf '%s\n' "$output" | sed 's/= ".*"/= "<v>"/' )"
+  want="$(sed 's/= ".*"/= "<v>"/' "$REPO_ROOT/tests/fixtures/signer-v0.16.1.out")"
+  [ "$got" = "$want" ]
+}
+
+@test "signer: differing tcp and udp ports are refused before any write" {
+  make_healthy_env
+  export MOCK_UDP_PORT=8001
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"different TCP and UDP ports"* ]]
+  grep -q '<IP>' "$MONAD_HOME/monad-bft/config/node.toml"
+}
+
+@test "signer: a missing port line is refused before any write" {
+  make_healthy_env
+  export MOCK_SIGNER_OMIT="self_tcp_port"
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"self_tcp_port"* ]]
+  grep -q '<IP>' "$MONAD_HOME/monad-bft/config/node.toml"
+}
+
+# ── concurrency ────────────────────────────────────────────
+@test "lock: a second run is refused without touching state" {
+  make_healthy_env
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  ( flock 9; sleep 5 ) 9>"$MF_STATE_DIR/.lock" &
+  local holder=$!
+  sleep 1
+  run bash "$SCRIPT" </dev/null
+  kill "$holder" 2>/dev/null || true
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"already in progress"* ]]
+  [ ! -f "$MF_STATE_DIR/state" ]
+}
+
+# ── staging integrity ──────────────────────────────────────
+@test "staging: a key changed after confirmation is refused, services untouched" {
+  make_healthy_env
+  local cfg="$MONAD_HOME/monad-bft/config"
+  mkdir -p "$MF_STATE_DIR/staging"; chmod 700 "$MF_STATE_DIR/staging"
+  printf 'MOCK-KEYSTORE ikm=%s pw=testpass\n' "$SECP_IKM" > "$MF_STATE_DIR/staging/id-secp.new"
+  printf 'MOCK-KEYSTORE ikm=%s pw=testpass\n' "$BLS_IKM"  > "$MF_STATE_DIR/staging/id-bls.new"
+  cp "$cfg/node.toml" "$MF_STATE_DIR/staging/node.toml.new"
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  cat > "$MF_STATE_DIR/state" <<EOF
+last_step=6
+network=testnet
+secp_pub=0xSECP1111111111111111111111111111111111111111
+bls_pub=0xBLS2222222222222222222222222222222222222222
+new_seq=8
+ip=203.0.113.7
+self_address=203.0.113.7:8000
+self_sig=abcd
+self_seq=8
+self_auth_port=8001
+staged_secp_sha=$(sha256sum "$MF_STATE_DIR/staging/id-secp.new" | awk '{print $1}')
+staged_bls_sha=$(sha256sum "$MF_STATE_DIR/staging/id-bls.new" | awk '{print $1}')
+staged_toml_sha=$(sha256sum "$MF_STATE_DIR/staging/node.toml.new" | awk '{print $1}')
+EOF
+  # tamper with the staged key AFTER it was confirmed and recorded
+  echo "tampered" >> "$MF_STATE_DIR/staging/id-secp.new"
+  run bash "$SCRIPT" --resume <<EOF
+STOPPED
+y
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"changed after it was prepared and confirmed"* ]]
+  ! grep -q "systemctl stop" "$MOCK_LOG"
+}
+
+# ── reboot safety: masking ─────────────────────────────────
+@test "mask: units are masked before the swap and unmasked after" {
+  make_healthy_env
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  grep -q "systemctl mask" "$MOCK_LOG"
+  grep -q "systemctl unmask" "$MOCK_LOG"
+  # mask must come before the services are stopped
+  local m s
+  m=$(grep -n "systemctl mask" "$MOCK_LOG" | head -1 | cut -d: -f1)
+  s=$(grep -n "systemctl stop" "$MOCK_LOG" | head -1 | cut -d: -f1)
+  [ "$m" -lt "$s" ]
+}
+
+@test "mask: a mask that does not take effect stops the run before the swap" {
+  make_healthy_env
+  export MOCK_MASK_FAIL=1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+STOPPED
+y
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Could not mask"* ]]
+  ! grep -q "systemctl stop" "$MOCK_LOG"
+  # live keys untouched
+  grep -q "ikm=9999" "$MONAD_HOME/monad-bft/config/id-secp"
+}
+
+@test "mask: a unit the operator had already masked is not unmasked" {
+  make_healthy_env
+  export MOCK_PREMASKED="monad-rpc"
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+STOPPED
+y
+EOF
+  grep -q "premasked_units=monad-rpc" "$MF_STATE_DIR/state" \
+    || grep -q "systemctl unmask monad-bft" "$MOCK_LOG"
+  ! grep -q "systemctl unmask monad-rpc" "$MOCK_LOG"
+}
+
+# ── Foundation snapshot: sequence suggestion ───────────────
+# The snapshot is advisory: it suggests a sequence and rules out values the
+# network would reject. Every guard falls back to asking the operator.
+
+@test "foundation: the published sequence is shown and suggests the next one" {
+  make_healthy_env
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Last published sequence for this key"* ]]
+  [[ "$output" == *"Suggested for this migration"* ]]
+  grep -q '^self_record_seq_num = 8' "$MONAD_HOME/monad-bft/config/node.toml"
+}
+
+@test "foundation: pressing Enter accepts the suggested sequence" {
+  make_healthy_env
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  grep -q '^self_record_seq_num = 8' "$MONAD_HOME/monad-bft/config/node.toml"
+}
+
+@test "foundation: a sequence at or below the published one is refused" {
+  make_healthy_env
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+7
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not higher than the 7"* ]]
+}
+
+@test "foundation: a validator with no published record is not treated as zero" {
+  make_healthy_env
+  export MOCK_FOUNDATION_NOPEER=1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+1
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no name record published"* ]]
+  # with nothing published, seq 1 is legitimate and must be accepted
+  grep -q '^self_record_seq_num = 1' "$MONAD_HOME/monad-bft/config/node.toml"
+}
+
+@test "foundation: a stale snapshot is not used" {
+  make_healthy_env
+  export MOCK_FOUNDATION_STALE=1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"snapshot is"*"h old"* ]]
+}
+
+@test "foundation: duplicate entries for one key are not used" {
+  make_healthy_env
+  export MOCK_FOUNDATION_DUP=1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"entries matched this key"* ]]
+}
+
+@test "foundation: an entry whose BLS does not match is not used" {
+  make_healthy_env
+  export MOCK_FOUNDATION_BLS=1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"BLS key does not match"* ]]
+}
+
+@test "foundation: a snapshot for another network is not used" {
+  make_healthy_env
+  export MOCK_FOUNDATION_NET=mainnet
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"snapshot is for 'mainnet', not testnet"* ]]
+}
+
+@test "foundation: an unreachable snapshot falls back to manual entry" {
+  make_healthy_env
+  export MOCK_FOUNDATION_FAIL=1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"snapshot unreachable"* ]]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+}
+
+# ── final verification ─────────────────────────────────────
+@test "verify: a node not yet in sync reports pending, not success" {
+  make_healthy_env
+  export MOCK_STATUS=syncing
+  export MOCK_STATUS_AFTER=1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"VERIFICATION PENDING"* ]]
+  [[ "$output" != *"VALIDATOR PROMOTION COMPLETE"* ]]
+  # resume state is kept so a later run re-checks
+  [ -f "$MF_STATE_DIR/state" ]
+}
+
+# ── beneficiary ────────────────────────────────────────────
+@test "beneficiary: a blank entry shows what would be kept and asks to confirm" {
+  make_healthy_env
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+
+y
+validator-one
+8
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ZERO address"* ]]
+  [[ "$output" == *"Keeping:"* ]]
+}
+
+@test "beneficiary: declining the kept address aborts before any change" {
+  make_healthy_env
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+
+n
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"enter the beneficiary address you want"* ]]
+  grep -q "ikm=9999" "$MONAD_HOME/monad-bft/config/id-secp"
+}
+
+# ── interruption windows around masking ────────────────────
+
+@test "mask: an interrupted mask is not mistaken for the operator's own" {
+  make_healthy_env
+  local cfg="$MONAD_HOME/monad-bft/config"
+  mkdir -p "$MF_STATE_DIR/staging"; chmod 700 "$MF_STATE_DIR/staging"
+  printf 'MOCK-KEYSTORE ikm=%s pw=testpass\n' "$SECP_IKM" > "$MF_STATE_DIR/staging/id-secp.new"
+  printf 'MOCK-KEYSTORE ikm=%s pw=testpass\n' "$BLS_IKM"  > "$MF_STATE_DIR/staging/id-bls.new"
+  cp "$cfg/node.toml" "$MF_STATE_DIR/staging/node.toml.new"
+  chmod 700 "$MF_STATE_DIR"
+  cat > "$MF_STATE_DIR/state" <<EOF
+last_step=6
+network=testnet
+secp_pub=0xSECP1111111111111111111111111111111111111111
+bls_pub=0xBLS2222222222222222222222222222222222222222
+new_seq=8
+ip=203.0.113.7
+self_address=203.0.113.7:8000
+self_sig=abcd
+self_seq=8
+self_auth_port=8001
+mask_observed=1
+premasked_units=
+staged_secp_sha=$(sha256sum "$MF_STATE_DIR/staging/id-secp.new" | awk '{print $1}')
+staged_bls_sha=$(sha256sum "$MF_STATE_DIR/staging/id-bls.new" | awk '{print $1}')
+staged_toml_sha=$(sha256sum "$MF_STATE_DIR/staging/node.toml.new" | awk '{print $1}')
+EOF
+  # the previous run had already masked the units before it was interrupted
+  systemctl mask monad-bft monad-execution monad-rpc
+  run bash "$SCRIPT" --resume <<EOF
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  # they were this run's masks, so they must have been removed again
+  grep -q "systemctl unmask monad-bft" "$MOCK_LOG"
+  [ "$(systemctl is-enabled monad-bft)" = "enabled" ]
+}
+
+@test "mask: an interruption after the swap still unmasks and starts on resume" {
+  make_healthy_env
+  local cfg="$MONAD_HOME/monad-bft/config"
+  # the swap already happened: live files are the validator's
+  printf 'MOCK-KEYSTORE ikm=%s pw=testpass\n' "$SECP_IKM" > "$cfg/id-secp"
+  printf 'MOCK-KEYSTORE ikm=%s pw=testpass\n' "$BLS_IKM"  > "$cfg/id-bls"
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  cat > "$MF_STATE_DIR/state" <<EOF
+last_step=6
+network=testnet
+secp_pub=0xSECP1111111111111111111111111111111111111111
+bls_pub=0xBLS2222222222222222222222222222222222222222
+new_seq=8
+ip=203.0.113.7
+self_address=203.0.113.7:8000
+self_sig=abcd
+self_seq=8
+self_auth_port=8001
+cutover_started=1
+swap_done=1
+mask_observed=1
+premasked_units=
+services_masked=1
+staged_secp_sha=$(sha256sum "$cfg/id-secp" | awk '{print $1}')
+staged_bls_sha=$(sha256sum "$cfg/id-bls" | awk '{print $1}')
+staged_toml_sha=$(sha256sum "$cfg/node.toml" | awk '{print $1}')
+EOF
+  systemctl mask monad-bft monad-execution monad-rpc
+  rm -f "$MOCK_LOG.active"
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already swapped by an earlier attempt"* ]]
+  [ "$(systemctl is-enabled monad-bft)" = "enabled" ]
+  [ -f "$MOCK_LOG.active" ]
+}
+
+# ── Foundation snapshot: structural reading ────────────────
+
+@test "foundation: a reordered snapshot still yields this key's own sequence" {
+  make_healthy_env
+  export MOCK_FOUNDATION_REORDER=1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  # peer is listed before secp; the value still belongs to this validator
+  [[ "$output" == *"Last published sequence for this key"* ]]
+  grep -q '^self_record_seq_num = 8' "$MONAD_HOME/monad-bft/config/node.toml"
+}
+
+@test "foundation: a snapshot with the wrong chain_id is not used" {
+  make_healthy_env
+  export MOCK_FOUNDATION_CHAIN=999
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"chain_id"* ]]
+}
+
+@test "foundation: an entry without a BLS key is not used" {
+  make_healthy_env
+  export MOCK_FOUNDATION_NOBLS=1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no BLS key"* ]]
+}
+
+@test "resume: a live file changed after the swap stops the services coming up" {
+  make_healthy_env
+  local cfg="$MONAD_HOME/monad-bft/config"
+  printf 'MOCK-KEYSTORE ikm=%s pw=testpass\n' "$SECP_IKM" > "$cfg/id-secp"
+  printf 'MOCK-KEYSTORE ikm=%s pw=testpass\n' "$BLS_IKM"  > "$cfg/id-bls"
+  mkdir -p "$MF_STATE_DIR"; chmod 700 "$MF_STATE_DIR"
+  cat > "$MF_STATE_DIR/state" <<EOF
+last_step=6
+network=testnet
+secp_pub=0xSECP1111111111111111111111111111111111111111
+bls_pub=0xBLS2222222222222222222222222222222222222222
+new_seq=8
+ip=203.0.113.7
+self_address=203.0.113.7:8000
+self_sig=abcd
+self_seq=8
+self_auth_port=8001
+cutover_started=1
+swap_done=1
+mask_observed=1
+premasked_units=
+services_masked=1
+staged_secp_sha=$(sha256sum "$cfg/id-secp" | awk '{print $1}')
+staged_bls_sha=$(sha256sum "$cfg/id-bls" | awk '{print $1}')
+staged_toml_sha=$(sha256sum "$cfg/node.toml" | awk '{print $1}')
+EOF
+  systemctl mask monad-bft monad-execution monad-rpc
+  rm -f "$MOCK_LOG.active"
+  # something replaced the placed key between the swap and this resume
+  echo "tampered" >> "$cfg/id-secp"
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no longer matches what the cutover placed"* ]]
+  # nothing was started, and the units stay masked
+  [ ! -f "$MOCK_LOG.active" ]
+  [ "$(systemctl is-enabled monad-bft)" = "masked" ]
+}
+
+@test "foundation: a truncated snapshot is not used" {
+  make_healthy_env
+  export MOCK_FOUNDATION_TRUNCATE=1
+  run bash "$SCRIPT" <<EOF
+y
+1
+
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not complete JSON"* ]]
+  grep -q '^self_record_seq_num = 8' "$MONAD_HOME/monad-bft/config/node.toml"
 }

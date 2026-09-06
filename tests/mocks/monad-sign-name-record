@@ -1,17 +1,27 @@
 #!/usr/bin/env bash
-# Mock monad-sign-name-record, mirroring the current upstream CLI: separate
-# --ip / --tcp-port / --udp-port flags. The removed --address form is
-# rejected exactly like the real binary rejects an unknown argument, so a
-# regression back to the old invocation fails the suite.
+# Mock monad-sign-name-record.
 #
-# Called WITHOUT --node-config (like the official install guide), the real
-# tool signs exactly the seq passed via --self-record-seq-num. MOCK_SEQ_OFFSET
-# simulates version drift (e.g. +1 or -1) for the guard tests. A --node-config
-# argument is a test failure by definition: passing it makes the real tool
-# ignore the seq argument and sign the stale config value.
+# Output mirrors a real monad v0.16.1 node, captured in
+# tests/fixtures/signer-v0.16.1.out: the address and each port are printed on
+# their own line, and self_address holds a bare IP with no port.
+#
+#     self_address = "203.0.113.7"
+#     self_tcp_port = 8000
+#     self_udp_port = 8000
+#     self_record_seq_num = 2
+#     self_auth_port = 8001
+#     self_name_record_sig = "..."
+#
+# node.toml wants a single combined "IP:PORT", so the tool has to assemble it.
+#
+# Knobs: MOCK_SEQ_OFFSET simulates version drift; MOCK_UDP_PORT emits a UDP
+# port different from the TCP one; MOCK_SIGNER_OMIT drops a named field.
+# The removed --address flag is rejected like an unknown argument, and
+# --node-config is a test failure by definition (it makes the real tool ignore
+# the seq argument and sign the stale config value).
 set -euo pipefail
 
-IP="" TCP_PORT="" SEQ=""
+IP="" TCP_PORT="" UDP_PORT="" AUTH_PORT="" SEQ=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --address)
@@ -19,11 +29,11 @@ while [[ $# -gt 0 ]]; do
       exit 1 ;;
     --ip)                     shift; IP="$1" ;;
     --tcp-port)               shift; TCP_PORT="$1" ;;
-    --udp-port)               shift ;;
+    --udp-port)               shift; UDP_PORT="$1" ;;
+    --authenticated-udp-port) shift; AUTH_PORT="$1" ;;
     --self-record-seq-num)    shift; SEQ="$1" ;;
     --keystore-path)          shift ;;
     --password)               shift ;;
-    --authenticated-udp-port) shift ;;
     --node-config)
       echo "mock monad-sign-name-record: --node-config must not be passed (it overrides the seq argument)" >&2
       exit 1 ;;
@@ -33,6 +43,12 @@ done
 
 [[ -n "$IP" && -n "$TCP_PORT" && -n "$SEQ" ]] || { echo "missing args" >&2; exit 1; }
 sig="$(printf 'ab%.0s' $(seq 1 65))"
-echo "self_address = \"$IP:$TCP_PORT\""
-echo "self_record_seq_num = $((SEQ + ${MOCK_SEQ_OFFSET:-0}))"
-echo "self_name_record_sig = \"$sig\""
+
+emit() { case " ${MOCK_SIGNER_OMIT:-} " in *" $1 "*) return 0 ;; esac; echo "$2"; }
+
+emit self_address        "self_address = \"$IP\""
+emit self_tcp_port       "self_tcp_port = $TCP_PORT"
+emit self_udp_port       "self_udp_port = ${MOCK_UDP_PORT:-${UDP_PORT:-$TCP_PORT}}"
+emit self_record_seq_num "self_record_seq_num = $(( SEQ + ${MOCK_SEQ_OFFSET:-0} ))"
+emit self_auth_port      "self_auth_port = ${AUTH_PORT:-8001}"
+emit self_name_record_sig "self_name_record_sig = \"$sig\""

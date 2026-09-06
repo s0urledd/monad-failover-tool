@@ -11,5 +11,18 @@ if [[ ! -f "$MARKER" ]]; then
   echo "blockDifference: unknown"
   exit 0
 fi
+# MOCK_STATUS_AFTER=N reports in-sync for the first N calls (the preflight sync
+# gate) and MOCK_STATUS from call N+1 on, so a test can leave the node healthy
+# before cutover and un-synced after it without faking the preflight.
+if [[ -n "${MOCK_STATUS_AFTER:-}" ]]; then
+  CNT="${MOCK_LOG:-/tmp/mock-systemctl}.statuscount"
+  n=$(( $(cat "$CNT" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" > "$CNT"
+  if [[ "$n" -le "$MOCK_STATUS_AFTER" ]]; then
+    echo "status: in-sync"
+    echo "blockDifference: 0"
+    exit 0
+  fi
+fi
 echo "status: ${MOCK_STATUS:-in-sync}"
 echo "blockDifference: ${MOCK_BLOCK_DIFF:-0}"
