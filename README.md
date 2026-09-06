@@ -32,7 +32,7 @@ Pinned to a release tag, so what you download never changes after the fact:
 curl -fsSLo /usr/local/bin/monad-failover \
   https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.2/monad-failover.sh
 
-echo "f40ae5ff6b7bce45e7bc4d7eeeb17ec7e23a8a946cc3663938cd29666c2f36a0  /usr/local/bin/monad-failover" | sha256sum -c -
+echo "2da555a171e7674d4a5cdafa5813e7a57299a646f3bfe020fab79d0c9bb1bd31  /usr/local/bin/monad-failover" | sha256sum -c -
 chmod 755 /usr/local/bin/monad-failover
 ```
 
@@ -101,11 +101,13 @@ unfinished cutover. Every live run is logged to `/opt/monad/failover-logs/`.
 
 ## Supported Monad versions
 
-Tested against the name record signer as shipped in monad 0.14.x through
-0.16.x. Those releases changed the signer's output shape, and both are handled:
-0.16.x prints `self_ip` with separate port fields, older builds printed a single
-combined `self_address`. If a future release changes it again, the run stops
-before anything is written rather than guessing.
+Verified against the name record signer shipped in monad **v0.16.1**, on a real
+node using a throwaway key. That signer prints the address and each port on its
+own line, while `node.toml` carries one combined `self_address = "IP:PORT"` plus
+a separate `self_auth_port`, so the tool assembles the address itself and copies
+the ports across. The exact output it was built against is kept in the test
+suite as a fixture. If a future release changes the shape, the run stops before
+anything is written rather than guessing.
 
 ## Battle-tested
 

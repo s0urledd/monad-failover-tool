@@ -2,9 +2,11 @@ network_name = "testnet"
 node_name = "fullnode-one"
 beneficiary = "0x0000000000000000000000000000000000000000"
 
-self_address = "<ENTER_IP>:8000"
-self_record_seq_num = <SEQ>
-self_name_record_sig = "<HEX_SIG>"
+[peer_discovery]
+self_address = "<IP>:<PORT>"
+self_auth_port = 8001
+self_record_seq_num = 0
+self_name_record_sig = "<NAME_RECORD_SIG>"
 
 [fullnode_raptorcast]
 enable_publisher = false

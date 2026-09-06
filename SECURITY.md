@@ -78,28 +78,52 @@ The three files that make up this node's identity (`id-secp`, `id-bls` and
 `node.toml`) cannot be swapped in one atomic step, so the run is built so that
 every point it can be interrupted is recoverable:
 
-- Each staged file is checksummed at the moment it is created and you confirm
-  it. Immediately before the swap, every file must still match that recorded
-  checksum, or already be in place with exactly that content from an earlier
-  attempt. The recorded value is never refreshed from what is on disk, which is
-  what stops a file modified after your confirmation from being accepted.
+- Staging lives in `/var/lib/monad-failover/staging`, owned by root and mode
+  `0700`, not in the config directory. That directory belongs to the `monad`
+  account, so anything staged there could be replaced between the checksum
+  check and the rename.
+- Each staged file is checksummed when it is created and you confirm it. The
+  recorded value is never refreshed from disk, so a file changed after your
+  confirmation is refused rather than accepted as the new expected content.
   Symlinks and non-regular files are refused.
-- The units are masked before the swap and unmasked only once all three files
-  are in place. A plain stop is not enough: the units are normally enabled, so a
-  reboot between two renames would otherwise bring the node up with a mixed
-  identity. The mask is persistent, because a `--runtime` mask does not survive
-  a reboot, and the run verifies the mask actually took effect before it touches
-  anything. Units you had already masked yourself are left masked afterwards.
+- Placement copies the verified content into the destination directory, checks
+  it again there, and only then renames it, so the final step is a rename
+  within one filesystem and cannot be interrupted half-written. A move from the
+  staging filesystem straight to the config filesystem would be a copy, not an
+  atomic rename. The live file is checked once more afterwards, so what was
+  verified is provably what landed.
+- The units are masked before the swap and unmasked only once every file is in
+  place. A plain stop is not enough: the units are normally enabled, so a reboot
+  between two renames would otherwise bring the node up with a mixed identity.
+  The mask is persistent, because a `--runtime` mask does not survive a reboot,
+  and the run verifies the mask actually took effect before touching anything.
+  What was already masked is recorded before the first mask is applied, so an
+  interruption in between cannot make a resume read this run's own masks as
+  yours. Units you had masked yourself are left masked, and not started.
+- Placing the files and bringing the services up are two separately resumable
+  stages. An interruption after the swap resumes into the bring-up, so the units
+  cannot be left masked with nothing to unmask them. An unmask that does not
+  take effect is never recorded as done.
 - The whole live run holds an exclusive `flock`. A second run is refused before
   it reads or writes any state.
-- Staging files live alongside the files they replace, so each swap is a rename
-  within one filesystem and cannot be interrupted half-written.
 - Once a cutover has begun that fact is recorded, and a later run without
   `--resume` refuses to start fresh over an unfinished swap.
 
-`--resume` reads the recorded step and continues from it, in every one of these
-phases: before the mask, between renames, after the swap but before the services
-start, and during final verification.
+`--resume` reads the recorded stage and continues from it: before the mask,
+between renames, after the swap but before the services start, and during final
+verification.
+
+## Reading the Foundation snapshot
+
+The sequence suggestion comes from Monad Foundation's published validator data.
+It is read with a structural pass that tracks string state and brace depth, so
+every field is taken from inside the object it belongs to. A flat text scan
+would attribute a neighbouring validator's sequence to your key as soon as the
+publisher reorders fields. The entry must match your SECP key exactly and be
+unique, its BLS key must match the key you imported, and the snapshot's network
+and chain id must be the ones this node is on. A validator with no published
+record is reported as unknown, never as sequence zero. Anything that fails these
+checks falls back to entering the number yourself, with the reason shown.
 
 ## Services active is not the same as validating
 

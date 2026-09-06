@@ -2,56 +2,52 @@
 
 ## 1.9.2 — 2026-09-06
 
-Independent re-verification of a pre-release audit against the current code, the
-official Monad docs and the Foundation's published validator data. Confirmed
-findings are fixed; one was rejected (see below).
+Independent verification of a pre-release audit against the current code, the
+official Monad docs and config, the Foundation's published validator data, and a
+real v0.16.1 signer capture. Confirmed findings are fixed; one was rejected.
 
-- **Signer output compatibility (the run could not complete at all).** monad
-  0.16.x prints the signed address split across `self_ip`, `self_tcp_port` and
-  `self_udp_port`, while `node.toml` still wants one combined `self_address`.
-  The tool only looked for `self_address` in the signer output, so on a current
-  node it aborted at the signing step with "Failed to parse self_address". Both
-  shapes are now accepted and the combined value is built the way the official
-  install guide specifies. The signer mock emitted the old shape, which is why
-  the suite never caught this; it now emits the current one, with the older form
-  kept under a flag and covered by its own test.
-- **A reboot mid-cutover could start a mixed identity.** The units were stopped
-  but not masked, and they are normally enabled, so a reboot between two of the
-  three renames would bring the node up with one new key and one old one. The
-  units are now masked before the swap and unmasked after it, the mask is
-  verified to have taken effect, and units the operator had already masked stay
-  masked.
-- **Staged files were not re-checked against what you confirmed.** Checksums are
-  now recorded when each file is created and confirmed, and verified immediately
-  before the swap. A file changed in between is refused, and the recorded value
-  is never refreshed from disk. Symlinks and non-regular files are refused.
-- **No guard against two runs at once.** The whole live run now holds an
-  exclusive `flock`; a second run is refused before it reads or writes anything.
-- **Blank beneficiary was accepted silently.** It now shows the address that
-  would be kept, flags the zero address, and requires an explicit confirmation.
-- **Sync was judged five seconds after cutover.** It now gets a bounded window,
-  and if the node has not caught up the run reports the cutover complete with
-  verification pending, keeps the resume state and does not print success.
-- **Sequence numbers are suggested, not looked up by hand.** The run reads the
-  last published record sequence for the imported SECP key from the Foundation's
-  validator snapshot and offers the next value; press Enter to take it. Matching
-  is on the exact public key and cross-checked against the BLS key. The snapshot
-  is refused if it is for another network, stale, ambiguous or missing a record,
-  and a validator with no published record is never treated as sequence zero. A
-  value at or below the published one is rejected because peers would reject it.
-  The "never migrated, enter 1" guidance is gone: a first install already uses 1.
-- A resume that has not reached cutover re-checks node health rather than
-  trusting an older result.
-- Rejected: "the post-cutover health check passes while the node is not synced"
+- **Signer output.** Verified against monad v0.16.1: the signer prints
+  `self_address` as a bare IP with the ports on their own lines
+  (`self_tcp_port`, `self_udp_port`, `self_auth_port`), while the official
+  `node.toml` carries one combined `self_address = "IP:PORT"` plus a separate
+  `self_auth_port`. The tool now assembles the address from the emitted IP and
+  TCP port, refuses to guess when the TCP and UDP ports differ or a line is
+  missing, and carries `self_auth_port`, the sequence and the signature across
+  unchanged. The captured output is kept as a test fixture and the mock is
+  checked against it field by field.
+- **Staging moved out of the config directory.** Staged keys and config now live
+  in `/var/lib/monad-failover/staging` (`root:root`, `0700`) instead of the
+  `monad`-owned config directory, where a staged file could be replaced between
+  the checksum check and the rename. Placement copies the verified content into
+  the destination directory, re-checks it there, renames within that one
+  filesystem, and verifies the live file afterwards, so a move across
+  filesystems can no longer stand in for an atomic rename.
+- **Two interruption windows around masking closed.** What was already masked is
+  now recorded before the first mask is applied, so an interruption in between
+  cannot make a resume read this run's own masks as the operator's. Placing the
+  files and bringing the services up are separately resumable stages, so an
+  interruption after the swap resumes into the bring-up instead of skipping it
+  and leaving the units masked. An unmask that does not take effect is no longer
+  recorded as done, and units the operator had masked are left alone rather than
+  started.
+- **Foundation snapshot read structurally.** The sequence lookup now tracks
+  string state and brace depth so every field is read from inside its own
+  validator object. The previous flat scan attributed a neighbouring
+  validator's sequence to the target key as soon as fields were reordered. The
+  entry must be unique, its BLS key must match, and the snapshot's network and
+  chain id must match this node's; a validator with no published record stays
+  unknown rather than zero.
+- Rejected: the post-cutover health check "passing while the node is not synced"
   is by design. A freshly promoted node needs time to catch up, so requiring
   in-sync immediately would fail every successful migration. The preflight sync
-  gate is the hard one, and the pending state above covers the rest.
-- Docs: README now answers what to prepare, what to run and what to expect;
-  checksum, resume and masking internals moved to SECURITY.md, which also
-  documents the new Foundation endpoint and the supported monad versions.
-- Tests: 20 new cases covering both signer shapes and a malformed one, the mask
-  ordering and its failure path, staged-file tampering, the run lock, every
-  Foundation guard, verification-pending, and the beneficiary prompts.
+  gate is the hard one, and an un-caught-up node is reported as verification
+  pending rather than success.
+- Docs: README states the verified signer version and what the tool assembles;
+  SECURITY.md covers the staging location, the placement and masking stages, and
+  how the snapshot is read.
+- Tests: 70 cases. New coverage for the real signer shape and the mock's parity
+  with it, mismatched and missing port lines, both mask interruption windows,
+  reordered snapshot JSON, wrong chain id, and an entry with no BLS key.
 
 ## 1.9.1 — 2026-09-06
 
