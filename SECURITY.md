@@ -11,10 +11,14 @@ standard system tools. Concretely, it:
 - writes only under `/home/monad/monad-bft/config`, `/opt/monad/backup` and
   `/var/lib/monad-failover` (resume state)
 - manages only the `monad-bft`, `monad-execution` and `monad-rpc` systemd units
-- makes two kinds of outbound requests, both HTTPS: `ifconfig.me` to detect the
-  server's public IP, and the monval uptime API (`validator-api.huginn.tech`) after
-  cutover to confirm the network sees the validator. Only the public key is sent;
-  a failed API call never blocks the run
+- makes three kinds of outbound requests, all HTTPS and all optional to the
+  result: `ifconfig.me` to detect the server's public IP; Monad Foundation's
+  validator snapshot (`bucket.monadinfra.com/validator-data/<network>.json`) to
+  read the last published name record sequence for your key, which is used only
+  to suggest a number you can override; and the monval uptime API
+  (`validator-api.huginn.tech`) after cutover to confirm the network sees the
+  validator. Nothing but a public key is ever sent, and a failed call to any of
+  them never blocks the run
 
 It contains no telemetry and never transmits your keys or password anywhere. Secret
 files it creates (key backups, resume state) are created with a `077` umask so they
@@ -67,6 +71,45 @@ grounds. On startup the script:
 If you see one of these refusals on a machine only you administer, it usually
 means an interrupted run and a stale file: restore the node from
 `/opt/monad/backup` if needed, remove the reported path, and start a fresh run.
+
+## How a cutover cannot leave a half-swapped node
+
+The three files that make up this node's identity (`id-secp`, `id-bls` and
+`node.toml`) cannot be swapped in one atomic step, so the run is built so that
+every point it can be interrupted is recoverable:
+
+- Each staged file is checksummed at the moment it is created and you confirm
+  it. Immediately before the swap, every file must still match that recorded
+  checksum, or already be in place with exactly that content from an earlier
+  attempt. The recorded value is never refreshed from what is on disk, which is
+  what stops a file modified after your confirmation from being accepted.
+  Symlinks and non-regular files are refused.
+- The units are masked before the swap and unmasked only once all three files
+  are in place. A plain stop is not enough: the units are normally enabled, so a
+  reboot between two renames would otherwise bring the node up with a mixed
+  identity. The mask is persistent, because a `--runtime` mask does not survive
+  a reboot, and the run verifies the mask actually took effect before it touches
+  anything. Units you had already masked yourself are left masked afterwards.
+- The whole live run holds an exclusive `flock`. A second run is refused before
+  it reads or writes any state.
+- Staging files live alongside the files they replace, so each swap is a rename
+  within one filesystem and cannot be interrupted half-written.
+- Once a cutover has begun that fact is recorded, and a later run without
+  `--resume` refuses to start fresh over an unfinished swap.
+
+`--resume` reads the recorded step and continues from it, in every one of these
+phases: before the mask, between renames, after the swap but before the services
+start, and during final verification.
+
+## Services active is not the same as validating
+
+After the swap, every unit must report active or the run fails with the recovery
+steps. Sync is a separate question and gets a bounded window of its own. If the
+node has not caught up in that window the run reports the cutover as complete
+with verification pending, keeps the resume state, and does not print success.
+The monval uptime figure is a 24 hour window keyed on the public key, so it says
+the identity is participating; it is not on its own proof that this new server is
+the one doing it.
 
 ## Verifying what you run
 

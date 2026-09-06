@@ -1,5 +1,58 @@
 # Changelog
 
+## 1.9.2 — 2026-09-06
+
+Independent re-verification of a pre-release audit against the current code, the
+official Monad docs and the Foundation's published validator data. Confirmed
+findings are fixed; one was rejected (see below).
+
+- **Signer output compatibility (the run could not complete at all).** monad
+  0.16.x prints the signed address split across `self_ip`, `self_tcp_port` and
+  `self_udp_port`, while `node.toml` still wants one combined `self_address`.
+  The tool only looked for `self_address` in the signer output, so on a current
+  node it aborted at the signing step with "Failed to parse self_address". Both
+  shapes are now accepted and the combined value is built the way the official
+  install guide specifies. The signer mock emitted the old shape, which is why
+  the suite never caught this; it now emits the current one, with the older form
+  kept under a flag and covered by its own test.
+- **A reboot mid-cutover could start a mixed identity.** The units were stopped
+  but not masked, and they are normally enabled, so a reboot between two of the
+  three renames would bring the node up with one new key and one old one. The
+  units are now masked before the swap and unmasked after it, the mask is
+  verified to have taken effect, and units the operator had already masked stay
+  masked.
+- **Staged files were not re-checked against what you confirmed.** Checksums are
+  now recorded when each file is created and confirmed, and verified immediately
+  before the swap. A file changed in between is refused, and the recorded value
+  is never refreshed from disk. Symlinks and non-regular files are refused.
+- **No guard against two runs at once.** The whole live run now holds an
+  exclusive `flock`; a second run is refused before it reads or writes anything.
+- **Blank beneficiary was accepted silently.** It now shows the address that
+  would be kept, flags the zero address, and requires an explicit confirmation.
+- **Sync was judged five seconds after cutover.** It now gets a bounded window,
+  and if the node has not caught up the run reports the cutover complete with
+  verification pending, keeps the resume state and does not print success.
+- **Sequence numbers are suggested, not looked up by hand.** The run reads the
+  last published record sequence for the imported SECP key from the Foundation's
+  validator snapshot and offers the next value; press Enter to take it. Matching
+  is on the exact public key and cross-checked against the BLS key. The snapshot
+  is refused if it is for another network, stale, ambiguous or missing a record,
+  and a validator with no published record is never treated as sequence zero. A
+  value at or below the published one is rejected because peers would reject it.
+  The "never migrated, enter 1" guidance is gone: a first install already uses 1.
+- A resume that has not reached cutover re-checks node health rather than
+  trusting an older result.
+- Rejected: "the post-cutover health check passes while the node is not synced"
+  is by design. A freshly promoted node needs time to catch up, so requiring
+  in-sync immediately would fail every successful migration. The preflight sync
+  gate is the hard one, and the pending state above covers the rest.
+- Docs: README now answers what to prepare, what to run and what to expect;
+  checksum, resume and masking internals moved to SECURITY.md, which also
+  documents the new Foundation endpoint and the supported monad versions.
+- Tests: 20 new cases covering both signer shapes and a malformed one, the mask
+  ordering and its failure path, staged-file tampering, the run lock, every
+  Foundation guard, verification-pending, and the beneficiary prompts.
+
 ## 1.9.1 — 2026-09-06
 
 - The install location is now root-owned `/usr/local/bin/monad-failover`,

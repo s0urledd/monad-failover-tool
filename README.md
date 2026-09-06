@@ -6,9 +6,23 @@
 Promotes a synced Monad full node to a validator, following the official
 [node migration](https://docs.monad.xyz/node-ops/node-recovery/node-migration) procedure.
 It is built for the worst case: the old validator server is gone. All it needs is a
-synced full node and your `secp-backup` / `bls-backup` key files (created during the
-official [full node installation](https://docs.monad.xyz/node-ops/full-node-installation#generate-keystores);
-keep copies off-server).
+synced full node and your validator key backups.
+
+## What you need
+
+- A full node synced to the tip, with its services running.
+- Your `secp-backup` and `bls-backup` files, copied onto this server. They are
+  created during the official
+  [full node installation](https://docs.monad.xyz/node-ops/full-node-installation#generate-keystores);
+  keep copies off-server. If you do not have them, you can paste the raw IKM
+  values instead (hidden input).
+- The beneficiary address from the old validator. If you leave it blank the
+  tool shows the address already in this node's config and asks you to confirm it.
+
+You do not need to look up the name record sequence number. The tool reads the
+last published value for your key from Monad Foundation's validator snapshot and
+suggests the next one. Press Enter to accept it, or type a higher number if you
+know of a later one.
 
 ## Install
 
@@ -16,23 +30,19 @@ Pinned to a release tag, so what you download never changes after the fact:
 
 ```bash
 curl -fsSLo /usr/local/bin/monad-failover \
-  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.1/monad-failover.sh
+  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.2/monad-failover.sh
 
-echo "8a08f889082457599b867a0ebf4eb290a28d253f90f4eca1022a7455164a03ac  /usr/local/bin/monad-failover" | sha256sum -c -
+echo "f40ae5ff6b7bce45e7bc4d7eeeb17ec7e23a8a946cc3663938cd29666c2f36a0  /usr/local/bin/monad-failover" | sha256sum -c -
 chmod 755 /usr/local/bin/monad-failover
 ```
 
 `sha256sum -c` prints `/usr/local/bin/monad-failover: OK` and fails loudly on any
-mismatch, so there is nothing to eyeball.
+mismatch, so there is nothing to eyeball. It installs to root-owned
+`/usr/local/bin` because it runs as root.
 
-The tool runs as root, so it lives in root-owned `/usr/local/bin` rather than
-under `/home/monad`, which the `monad` service account can write. The resume
-state is kept out of that directory for the same reason.
+## Run
 
-## Usage
-
-On a full node synced to the tip, with your backup files copied over, start with a
-dry run. It checks everything and changes nothing:
+Start with a dry run. It checks everything and changes nothing:
 
 ```bash
 monad-failover --dry-run   # read-only preflight
@@ -43,67 +53,34 @@ monad-failover             # live run
 |---|---|
 | `--dry-run` | run every preflight check read-only; touch nothing |
 | `--backup-dir PATH` | where `secp-backup` / `bls-backup` live; skips the key-source prompt |
-| `--public-ip IP` | use this IPv4 in the name record instead of auto-detecting via ifconfig.me |
+| `--public-ip IP` | use this IPv4 in the name record instead of auto-detecting |
 | `--resume` | pick up where a previous run left off |
 | `--version` | print version and exit |
 
-The run is fully interactive and asks for confirmation before anything irreversible.
-Keys are read from the backup files by default, or pasted as raw IKM values (hidden
-input).
+## What you will see
 
-## How it works
+The run is interactive and asks for confirmation before anything irreversible.
+It goes through eight phases:
 
-1. Verifies the node is in-sync and that you are on the right host, then backs up the
-   full node's own identity to `/opt/monad/backup/failover-<timestamp>/`.
-2. Imports the validator keys into staging files (`id-secp.new` / `id-bls.new`) and
-   shows the recovered public keys for confirmation.
-3. Sets `node_name`, `beneficiary` and the required flags, signs a new name record
-   with the `self_record_seq_num` you enter (the final value, used verbatim: last
-   was 7 → enter 8) — all on a staging copy, `node.toml.new`. **Nothing live changes
-   before cutover**: abort at any prompt and the full node is exactly as it was.
-4. Asks you to confirm the old validator is stopped (you type `STOPPED`), then cuts
-   over: stops services, swaps keys and config into place, restarts as validator,
-   and re-exports fresh backup files from the live keys.
-5. Verifies the result: every service must actually be **active** after the restart
-   (a unit that crashes right after starting fails the run with recovery steps),
-   plus local sync status and a query to the [monval](https://monval.huginn.tech/)
-   uptime API so you see how the network sees your validator right in the output.
+1. Sync and RPC checks, and a confirmation that you are on the right host.
+2. This node's own identity is backed up to `/opt/monad/backup/failover-<timestamp>/`.
+3. Your validator keys are imported to staging files, and their public keys are
+   shown for you to confirm.
+4. Beneficiary, node name and the required flags are set on a staging copy of
+   `node.toml`.
+5. The sequence number is suggested from the Foundation snapshot; you accept or
+   override it.
+6. The name record is signed and patched into the staging config.
+7. You confirm the old validator is stopped by typing `STOPPED`, then the keys
+   and config are swapped in and the services start as a validator.
+8. Every service must come up active, then the node's sync status and the
+   [monval](https://monval.huginn.tech/) uptime API are checked.
 
-The cutover itself is resumable: before anything moves, the checksums of the staged
-files are recorded, so if a rename fails or the machine dies mid-swap, `--resume`
-recognizes what already made it into place and finishes only the rest. It never
-repeats a completed swap, and once a cutover has begun a fresh run is refused until
-the interrupted one is finished. Every live run is also recorded to
-`/opt/monad/failover-logs/` (no secrets ever appear in the output), so you always
-have a log of what happened.
+Nothing on the live node changes before phase 7. Abort at any prompt up to that
+point and the full node is exactly as it was.
 
-## Why trust one bash file with your validator keys?
-
-Fair question.
-
-There is nothing to vet beyond the Monad binaries and the tools every Ubuntu server
-already ships (bash, curl, systemd, grep/sed/awk/ss). Read it before you run it; it
-is short. The README pins its sha256 and CI fails if the two drift apart.
-
-Nothing runs blind. `--dry-run` exercises every check without touching a file, key
-or service. CI runs the full promotion flow against mocked Monad binaries with bats,
-including cutover failure and resume, plus ShellCheck on every commit.
-
-Nothing sensitive leaves the machine. There is no telemetry. The only outbound calls
-are HTTPS requests to `ifconfig.me` for public-IP detection and the monval uptime API
-for the post-cutover check, which sends a public key. Secrets are never logged, and
-secret files are created `600`. See [SECURITY.md](SECURITY.md) for the full surface.
-
-## Battle-tested
-
-Proven in a live mainnet migration on **Monad v0.14.5** (July 2026): the Huginn
-validator was moved to a fresh full node with this script. That run also surfaced
-two real signer behaviours which are now fixed and regression-locked in the test
-suite. If a future monad release changes the signer's output, the built-in drift
-guard stops the run before anything is written.
-
-The full run, phase by phase (the actual mainnet migration, re-rendered in the
-current TUI):
+If the node has not caught up by the end of phase 8, the run says so plainly
+instead of claiming success, and tells you the one command to re-check later.
 
 ![Preflight, host confirmation and config backup](docs/run-1.png)
 
@@ -115,19 +92,39 @@ current TUI):
 
 ![Post-cutover verification and completion](docs/run-5.png)
 
+## If a run is interrupted
+
+Run `monad-failover --resume`. It works out how far the previous run got and
+continues from there, including part-way through the cutover. It never repeats a
+step that already completed, and it refuses to start a fresh run over an
+unfinished cutover. Every live run is logged to `/opt/monad/failover-logs/`.
+
+## Supported Monad versions
+
+Tested against the name record signer as shipped in monad 0.14.x through
+0.16.x. Those releases changed the signer's output shape, and both are handled:
+0.16.x prints `self_ip` with separate port fields, older builds printed a single
+combined `self_address`. If a future release changes it again, the run stops
+before anything is written rather than guessing.
+
+## Battle-tested
+
+Proven in a live mainnet migration on Monad v0.14.5 (July 2026): the Huginn
+validator was moved to a fresh full node with this script. That run surfaced two
+real signer behaviours which are fixed and regression-locked in the test suite.
+
 ## Notes
 
-- Never start the old machine again with the same keys. Two nodes signing with one
-  identity is the one mistake you cannot undo, which is why cutover requires you to
-  type `STOPPED` after confirming the old validator is down.
-- `self_record_seq_num` is monotonic and peers reject stale values. The number you
-  enter is used as-is; it lives in your records or on the old validator, not on the
-  new machine. If you do not know the last value, enter one you are sure is higher;
-  gaps are harmless.
+- Do not run the old and new machines with the same keys at the same time. Two
+  nodes under one identity disrupt this validator's consensus participation and
+  name record, which is why cutover makes you type `STOPPED` first.
 - The VDP requires validators to push metrics to Monad Foundation's monitoring
   infrastructure. Set that up on the new server after migrating
   ([docs](https://docs.monad.xyz/node-ops/validator-delegation-program)).
-- If downstream full nodes peer with this validator, update its name record in their
-  `node.toml`.
+- If downstream full nodes peer with this validator, update its name record in
+  their `node.toml`.
+
+How the tool protects your keys, what it verifies, and every network call it
+makes are documented in [SECURITY.md](SECURITY.md).
 
 MIT licensed.

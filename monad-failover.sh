@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.9.1"
+VERSION="1.9.2"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -229,6 +229,19 @@ secure_state_dir() {
     # everyone else out). This narrows, it never widens, so it cannot make a
     # loose file trusted.
     chmod 600 "$STATE_FILE" 2>/dev/null || true
+  fi
+}
+
+# One live run at a time. Two concurrent runs would race on the state file and,
+# worse, on the cutover itself. The lock fd is held for the lifetime of the
+# process, so it is released even if the run dies.
+acquire_run_lock() {
+  local lock="$STATE_DIR/.lock"
+  exec 9>"$lock" || die "Could not open the run lock at $lock"
+  if ! flock -n 9; then
+    die "Another monad-failover run is already in progress on this host." \
+      "Nothing has been read or changed by this invocation." \
+      "Wait for it to finish, or check for a stuck run:  fuser -v $lock"
   fi
 }
 
@@ -505,12 +518,46 @@ sign_and_patch() {
   fi
 
   # The signature is bound to the values the signer EMITS, so the output is
-  # the single source of truth for all three patched fields.
-  SELF_ADDRESS="$(echo "$sign_out" | grep '^self_address ' | cut -d '"' -f2 || true)"
-  SELF_SIG="$(echo "$sign_out" | grep '^self_name_record_sig ' | cut -d '"' -f2 || true)"
-  SELF_SEQ="$(echo "$sign_out" | grep '^self_record_seq_num ' | awk '{print $NF}' || true)"
+  # the single source of truth for every patched field.
+  #
+  # Two output shapes exist across monad versions. Current builds (0.16.x)
+  # emit the address split apart:
+  #     self_ip = "1.2.3.4"
+  #     self_tcp_port = 8000
+  #     self_udp_port = 8000
+  # while node.toml still wants one combined field, so the official install
+  # guide says to build self_address by concatenating self_ip and
+  # self_tcp_port, and to ignore self_udp_port. Older builds emitted the
+  # combined self_address directly. Accept both; write the combined form.
+  local s_ip s_tcp s_addr
+  s_ip="$(echo "$sign_out"   | grep -m1 '^self_ip '       | cut -d '"' -f2   || true)"
+  s_tcp="$(echo "$sign_out"  | grep -m1 '^self_tcp_port ' | awk '{print $NF}' || true)"
+  s_addr="$(echo "$sign_out" | grep -m1 '^self_address '  | cut -d '"' -f2   || true)"
+  SELF_SIG="$(echo "$sign_out" | grep -m1 '^self_name_record_sig ' | cut -d '"' -f2 || true)"
+  SELF_SEQ="$(echo "$sign_out" | grep -m1 '^self_record_seq_num ' | awk '{print $NF}' || true)"
 
-  [[ -n "$SELF_ADDRESS" ]]      || die "Failed to parse self_address from signer output"
+  if [[ -n "$s_ip" ]]; then
+    valid_ipv4 "$s_ip" || die \
+      "Signer emitted self_ip='$s_ip', which is not a valid IPv4 address." \
+      "Nothing has been written. Check the monad version and re-run."
+    if ! [[ "$s_tcp" =~ ^[0-9]{1,5}$ ]] || [[ "$s_tcp" -lt 1 ]] || [[ "$s_tcp" -gt 65535 ]]; then
+      die "Signer emitted self_ip but no usable self_tcp_port (got '$s_tcp')." \
+        "node.toml needs both to build self_address. Nothing has been written."
+    fi
+    SELF_ADDRESS="${s_ip}:${s_tcp}"
+    SIGNER_FORMAT="split"
+  elif [[ -n "$s_addr" ]]; then
+    SELF_ADDRESS="$s_addr"
+    SIGNER_FORMAT="combined"
+  else
+    die "Could not read the signed address from monad-sign-name-record output." \
+      "Expected either 'self_ip' + 'self_tcp_port' (monad 0.16.x) or a combined" \
+      "'self_address' (older builds). Nothing has been written." \
+      "Check the installed monad version against the versions this tool supports."
+  fi
+
+  [[ "$SELF_ADDRESS" =~ ^[0-9.]+:[0-9]+$ ]] || die \
+    "Refusing to write a malformed self_address ('$SELF_ADDRESS')."
   [[ -n "$SELF_SIG" ]]          || die "Failed to parse self_name_record_sig from signer output"
   [[ "$SELF_SEQ" =~ ^[0-9]+$ ]] || die "Failed to parse self_record_seq_num from signer output"
 
@@ -525,7 +572,7 @@ sign_and_patch() {
     warn "Signer emitted seq $SELF_SEQ (requested $seq) — this monad version increments it."
     echo "  Safe to continue: the signature matches the emitted value."
   fi
-  ok "Name record signed (seq $SELF_SEQ)"
+  ok "Name record signed (seq $SELF_SEQ, ${SIGNER_FORMAT} signer output)"
 
   step "PATCH node.toml"
   local esc_addr esc_sig
@@ -618,16 +665,100 @@ post_verify() {
       "Finish: $0 --resume"
   done
   ok "All services active"
-  if command -v monad-status >/dev/null 2>&1; then
-    local out status
+
+  # Active units and a synced, participating node are two different results.
+  # Give sync a bounded window instead of judging it five seconds in, and if it
+  # still has not caught up, say so rather than declaring success.
+  VERIFY_PENDING=0
+  if ! command -v monad-status >/dev/null 2>&1; then
+    VERIFY_PENDING=1
+    warn "monad-status not installed — sync could not be confirmed."
+    return 0
+  fi
+  local limit="${MF_SYNC_WAIT:-120}" waited=0 out status
+  while :; do
     out="$(monad-status 2>/dev/null || true)"
     status="$(echo "$out" | grep -m1 'status:' | awk '{print $2}' || true)"
     if [[ "$status" == "in-sync" ]]; then
       ok "Node is in-sync"
-    else
-      warn "Status: ${status:-starting...} (may take a moment)"
+      return 0
     fi
+    [[ "$waited" -ge "$limit" ]] && break
+    sleep 5; waited=$((waited + 5))
+  done
+  VERIFY_PENDING=1
+  warn "Node reports ${status:-no status} after ${limit}s — not in-sync yet."
+}
+
+# ── Foundation validator snapshot ──────────────────────────
+# Published by Monad Foundation; used only to suggest a sequence number, never
+# to decide anything on its own. Matched on the exact SECP public key of the
+# key just imported, never on a name.
+FOUNDATION_DATA_BASE="${FOUNDATION_DATA_BASE:-https://bucket.monadinfra.com/validator-data}"
+FOUNDATION_MAX_AGE="${FOUNDATION_MAX_AGE:-86400}"
+# Largest value that survives both a JSON double and bash arithmetic intact.
+SEQ_SANE_MAX=9007199254740991
+
+FOUND_SEQ=""; FOUND_NOTE=""; FOUND_AGE_H=0
+SIGNER_FORMAT=""
+
+# Sets FOUND_SEQ to the sequence the snapshot last saw for this key (empty when
+# unknown) and FOUND_NOTE to a short reason when it could not be used.
+foundation_seq_lookup() {
+  FOUND_SEQ=""; FOUND_NOTE=""
+  local net="$1" secp="$2" bls="$3" out hdr hit cnt snap_net fetched age hit_seq hit_bls
+
+  out="$(curl -fsS --connect-timeout 10 --max-time 30 \
+        "$FOUNDATION_DATA_BASE/${net}.json" 2>/dev/null \
+      | head -c 33554432 \
+      | awk -v want="$secp" '
+          BEGIN{ RS="\"secp\": \""; found=0 }
+          NR==1{
+            if (match($0, /"network": "[a-z]+"/))       n=substr($0,RSTART+12,RLENGTH-13)
+            if (match($0, /"fetched_at_epoch": [0-9]+/)) f=substr($0,RSTART+20,RLENGTH-20)
+            print "HDR|" n "|" f; next }
+          { k=substr($0,1,index($0,"\"")-1)
+            if (tolower(k)!=tolower(want)) next
+            b=""; q="NONE"
+            if (match($0,/"bls": "[^"]*"/))             b=substr($0,RSTART+8,RLENGTH-9)
+            if (match($0,/"record_seq_num": [0-9]+/))   q=substr($0,RSTART+18,RLENGTH-18)
+            print "HIT|" q "|" b; found++ }
+          END{ print "CNT|" found }')" || { FOUND_NOTE="snapshot unreachable"; return 1; }
+
+  [[ -n "$out" ]] || { FOUND_NOTE="snapshot unreachable"; return 1; }
+
+  hdr="$(printf '%s\n' "$out" | grep -m1 '^HDR|' || true)"
+  hit="$(printf '%s\n' "$out" | grep -m1 '^HIT|' || true)"
+  cnt="$(printf '%s\n' "$out" | grep -m1 '^CNT|' | cut -d'|' -f2 || true)"
+
+  snap_net="$(printf '%s' "$hdr" | cut -d'|' -f2)"
+  fetched="$(printf '%s' "$hdr" | cut -d'|' -f3)"
+  [[ "$snap_net" == "$net" ]] || { FOUND_NOTE="snapshot is for '${snap_net:-unknown}', not $net"; return 1; }
+  [[ "$fetched" =~ ^[0-9]+$ ]] || { FOUND_NOTE="snapshot has no usable timestamp"; return 1; }
+  age=$(( $(date +%s) - fetched ))
+  [[ "$age" -lt 0 ]] && age=0
+  [[ "$age" -le "$FOUNDATION_MAX_AGE" ]] || { FOUND_NOTE="snapshot is $((age/3600))h old"; return 1; }
+
+  [[ "$cnt" == "1" ]] || { FOUND_NOTE="${cnt:-0} entries matched this key"; return 1; }
+
+  hit_seq="$(printf '%s' "$hit" | cut -d'|' -f2)"
+  hit_bls="$(printf '%s' "$hit" | cut -d'|' -f3)"
+
+  # The snapshot must agree with BOTH imported keys, or it is not this validator.
+  if [[ -n "$bls" && -n "$hit_bls" ]]; then
+    local a b; a="$(printf '%s' "$bls" | tr '[:upper:]' '[:lower:]' | sed 's/^0x//')"
+    b="$(printf '%s' "$hit_bls" | tr '[:upper:]' '[:lower:]' | sed 's/^0x//')"
+    [[ "$a" == "$b" ]] || { FOUND_NOTE="BLS key does not match the snapshot entry"; return 1; }
   fi
+
+  # No peer record published is NOT sequence zero; it means unknown.
+  [[ "$hit_seq" == "NONE" ]] && { FOUND_NOTE="no name record published for this key yet"; return 1; }
+  [[ "$hit_seq" =~ ^[0-9]{1,16}$ ]] || { FOUND_NOTE="sequence out of usable range"; return 1; }
+  [[ "$hit_seq" -le "$SEQ_SANE_MAX" ]] || { FOUND_NOTE="sequence out of usable range"; return 1; }
+
+  FOUND_SEQ="$hit_seq"
+  FOUND_AGE_H=$((age/3600))
+  return 0
 }
 
 # ── validator uptime API (monval by Huginn) ────────────────
@@ -679,16 +810,43 @@ detect_ip() {
 # ── cutover helpers ────────────────────────────────────────
 file_sha() { sha256sum "$1" 2>/dev/null | awk '{print $1}' || true; }
 
-# True if this staged file can be placed: it either still exists, or a
-# previous cutover attempt already moved it into place (the live file matches
-# the checksum recorded just before that attempt). This is what lets --resume
-# finish an interrupted cutover instead of wedging on a consumed staging file.
-staged_ready() {
-  local staged="$1" live="$2" state_key="$3"
-  [[ -f "$staged" ]] && return 0
-  local want
-  want="$(load_state "$state_key")"
-  [[ -n "$want" && "$(file_sha "$live")" == "$want" ]]
+# Read a top-level scalar out of a TOML file, unquoted. Only used for values
+# this script also writes, so the simple form is enough.
+toml_get() {
+  grep -m1 -E "^[[:space:]]*$2[[:space:]]*=" "$1" 2>/dev/null \
+    | sed -E 's/^[^=]*=[[:space:]]*//; s/^"//; s/"[[:space:]]*$//' || true
+}
+
+# A staged file may be placed only if it still matches the checksum recorded
+# when it was created and confirmed, or if an earlier cutover attempt already
+# moved exactly that content into place (which is what lets --resume finish an
+# interrupted cutover). The recorded checksum is never refreshed from what is on
+# disk now: re-hashing here would launder a file modified after confirmation
+# into the "expected" value.
+verify_staged_or_placed() {
+  local staged="$1" live="$2" state_key="$3" label="$4"
+  local want; want="$(load_state "$state_key")"
+  [[ "$want" =~ ^[0-9a-f]{64}$ ]] || die \
+    "No recorded checksum for $label — refusing to place it." \
+    "Start a fresh run so the staging steps re-create and record it."
+
+  [[ -L "$staged" ]] && die "$staged is a symlink — refusing to place it."
+  if [[ -e "$staged" ]]; then
+    [[ -f "$staged" ]] || die "$staged is not a regular file — refusing to place it."
+    [[ "$(file_sha "$staged")" == "$want" ]] || die \
+      "$label changed after it was prepared and confirmed." \
+      "Refusing to swap it in. Nothing has been changed on the live node." \
+      "Start a fresh run so the staging steps re-create it."
+    return 0
+  fi
+
+  # Gone from staging: it must already be in place from an earlier attempt.
+  [[ -L "$live" ]] && die "$live is a symlink — refusing to continue."
+  [[ -f "$live" && "$(file_sha "$live")" == "$want" ]] || die \
+    "Staging files are missing — refusing to stop services." \
+    "$label is neither staged nor already in place with the confirmed content." \
+    "Start a fresh run so the import and configure steps re-create them."
+  return 0
 }
 
 # Move a staged file into place; a no-op if a previous attempt already did
@@ -700,6 +858,46 @@ place_staged() {
   else
     ok "$label already in place from a previous cutover attempt"
   fi
+}
+
+# A reboot between the three file swaps would otherwise let systemd start the
+# units with a half-swapped identity: stopping a unit does not stop it coming
+# back on boot. Masking does, and it survives a reboot (a --runtime mask does
+# not, which is why it is not used here). Units already masked before this run
+# are recorded so they are not unmasked afterwards.
+mask_monad_services() {
+  step "MASK MONAD SERVICES"
+  local svc pre=""
+  # Record what the operator had already masked, but only on the first attempt:
+  # a resume would otherwise see this run's own mask and mistake it for theirs,
+  # then refuse to unmask and leave the node unable to start.
+  if [[ "$(load_state "services_masked")" != "1" ]]; then
+    for svc in "${MONAD_SERVICES[@]}"; do
+      [[ "$(systemctl is-enabled "$svc" 2>/dev/null || true)" == "masked" ]] && pre="$pre $svc"
+    done
+    save_state "premasked_units" "${pre# }"
+  fi
+  systemctl mask "${MONAD_SERVICES[@]}" >/dev/null 2>&1 || true
+  for svc in "${MONAD_SERVICES[@]}"; do
+    [[ "$(systemctl is-enabled "$svc" 2>/dev/null || true)" == "masked" ]] || die \
+      "Could not mask $svc — refusing to start the swap." \
+      "Without a mask, a reboot mid-swap would start this node with a" \
+      "half-swapped identity. Nothing has been changed." \
+      "Check: systemctl mask ${MONAD_SERVICES[*]}"
+  done
+  save_state "services_masked" "1"
+  ok "Services masked for the swap"
+}
+
+# Unmask only what this run masked; a unit the operator had masked beforehand
+# stays masked.
+unmask_monad_services() {
+  local svc pre; pre="$(load_state "premasked_units")"
+  for svc in "${MONAD_SERVICES[@]}"; do
+    case " $pre " in *" $svc "*) continue ;; esac
+    systemctl unmask "$svc" >/dev/null 2>&1 || true
+  done
+  save_state "services_masked" "0"
 }
 
 stop_monad_services() {
@@ -740,7 +938,7 @@ promote() {
   start_logging
   header
 
-  need_cmd curl; need_cmd systemctl; need_cmd sed; need_cmd sha256sum
+  need_cmd curl; need_cmd systemctl; need_cmd sed; need_cmd sha256sum; need_cmd flock
   need_cmd monad-keystore; need_cmd monad-sign-name-record
   [[ -f "$NODE_TOML" ]] || die "node.toml not found: $NODE_TOML"
   [[ -f "$ENV_FILE" ]]  || die ".env not found: $ENV_FILE"
@@ -836,6 +1034,14 @@ promote() {
       [[ "$last" -ge 6 ]] && require_state "self_sig"     "$SELF_SIG"
       [[ "$last" -ge 6 ]] && require_state "self_seq"     "$SELF_SEQ"
     fi
+  fi
+
+  # A resume can be hours old. While the cutover has not begun, the node's
+  # health is worth re-reading rather than trusting the earlier result. Once a
+  # cutover has begun the services are deliberately down, so sync is not a
+  # meaningful gate any more and this is skipped.
+  if $RESUME && [[ "$(load_state "cutover_started")" != "1" ]]; then
+    check_sync
   fi
 
   # ── 1. Sync + RPC ──
@@ -936,6 +1142,10 @@ promote() {
 
     save_state "secp_pub" "$SECP_PUB"
     save_state "bls_pub" "$BLS_PUB"
+    # Bind the confirmed keys to their bytes now. Cutover re-checks these and
+    # refuses anything that changed after this confirmation.
+    save_state "staged_secp_sha" "$(file_sha "$SECP_KEY_NEW")"
+    save_state "staged_bls_sha"  "$(file_sha "$BLS_KEY_NEW")"
     save_state "last_step" "4"
   fi
 
@@ -950,8 +1160,11 @@ promote() {
     cp -a "$NODE_TOML" "$NODE_TOML_NEW"
 
     echo
+    local cur_ben; cur_ben="$(toml_get "$NODE_TOML_NEW" beneficiary)"
     echo "${BOLD}BENEFICIARY${RESET}"
-    echo "Enter the beneficiary address from the old validator's node.toml"
+    echo "Enter the beneficiary address from the old validator's node.toml."
+    echo "Leave blank to keep the address already in this node's config:"
+    echo "    ${BOLD}${cur_ben:-(none set)}${RESET}"
     ask "beneficiary" BENEFICIARY
     if [[ -n "$BENEFICIARY" ]]; then
       [[ "$BENEFICIARY" =~ ^0x[0-9a-fA-F]{40}$ ]] \
@@ -959,7 +1172,22 @@ promote() {
       set_toml_value "$NODE_TOML_NEW" "beneficiary" "\"$BENEFICIARY\""
       ok "Beneficiary: $BENEFICIARY"
     else
-      warn "No beneficiary entered — check node.toml manually after promotion."
+      # Blank means "keep what is there", so show exactly what that is and get
+      # a yes for it. Rewards go to this address; a silent wrong value is the
+      # kind of mistake nobody notices until payout.
+      if [[ -z "$cur_ben" ]]; then
+        die "No beneficiary given and none set in the config." \
+          "Re-run and enter the validator's beneficiary address."
+      fi
+      if [[ "$cur_ben" =~ ^0x0{40}$ ]]; then
+        warn "The address already in the config is the ZERO address."
+        echo "  Keeping it means this validator has no beneficiary set."
+      fi
+      echo "  Keeping: ${BOLD}${cur_ben}${RESET}"
+      confirm_yn "keep this beneficiary?" \
+        || die "Aborted — re-run and enter the beneficiary address you want."
+      BENEFICIARY="$cur_ben"
+      ok "Beneficiary kept: $BENEFICIARY"
     fi
 
     echo
@@ -978,13 +1206,33 @@ promote() {
 
     echo
     echo "${BOLD}SEQ NUM${RESET}"
-    echo "Enter the self_record_seq_num to use for THIS migration — the final value,"
-    echo "no math is done on it. It must be higher than the last value this validator"
-    echo "identity ever used. That number is NOT on this machine: check your records"
-    echo "or the old validator's node.toml (last was 7 → enter 8; never migrated → 1)."
-    echo "Unsure? Enter a value you are certain is higher — gaps are harmless."
-    ask "new seq_num" NEW_SEQ
-    [[ "$NEW_SEQ" =~ ^[1-9][0-9]*$ ]] || die "Must be a positive number"
+    echo "The name record's sequence number must be higher than any value this"
+    echo "validator identity has used before. Gaps are harmless."
+    echo
+
+    local suggested=""
+    step "FOUNDATION SNAPSHOT"
+    if foundation_seq_lookup "$NETWORK" "$SECP_PUB" "$BLS_PUB"; then
+      suggested=$(( FOUND_SEQ + 1 ))
+      ok "Last published sequence for this key: ${BOLD}${FOUND_SEQ}${RESET} (${NETWORK} snapshot, ${FOUND_AGE_H}h old)"
+      echo "  Suggested for this migration: ${BOLD}${suggested}${RESET}"
+      echo "  Press Enter to use it, or type a higher number if you know of a later one."
+    else
+      warn "Could not read a sequence from the Foundation snapshot (${FOUND_NOTE})."
+      echo "  Enter the value yourself: one higher than the last this identity used."
+      echo "  Check your records or the old validator's node.toml."
+    fi
+
+    ask "new seq_num${suggested:+ [$suggested]}" NEW_SEQ
+    [[ -z "$NEW_SEQ" && -n "$suggested" ]] && NEW_SEQ="$suggested"
+    [[ "$NEW_SEQ" =~ ^[1-9][0-9]{0,15}$ ]] || die "Must be a positive number"
+    [[ "$NEW_SEQ" -le "$SEQ_SANE_MAX" ]]   || die "Sequence number is unreasonably large"
+    # The snapshot value is a floor, never a ceiling: a stale snapshot can only
+    # be behind the network, so anything at or below it would be rejected.
+    if [[ -n "$FOUND_SEQ" && "$NEW_SEQ" -le "$FOUND_SEQ" ]]; then
+      die "seq_num $NEW_SEQ is not higher than the ${FOUND_SEQ} already published for this key." \
+        "Peers would reject the record. Use ${suggested} or higher."
+    fi
     ok "seq_num for this migration: $NEW_SEQ"
 
     set_toml_value "$NODE_TOML_NEW" "enable_publisher" "true"  "fullnode_raptorcast"
@@ -1010,6 +1258,8 @@ promote() {
     save_state "self_address" "$SELF_ADDRESS"
     save_state "self_sig" "$SELF_SIG"
     save_state "self_seq" "$SELF_SEQ"
+    # node.toml.new is final once the record is signed and patched in.
+    save_state "staged_toml_sha" "$(file_sha "$NODE_TOML_NEW")"
     save_state "last_step" "6"
   fi
 
@@ -1047,28 +1297,19 @@ promote() {
     echo
     confirm_yn "proceed with cutover?" || die "Aborted."
 
-    # Record checksums of what is about to be placed. If this cutover is
-    # interrupted mid-swap, a re-run uses these to recognize the files that
-    # already made it into place and only moves the rest — --resume can always
-    # finish an interrupted cutover.
-    [[ -f "$SECP_KEY_NEW"  ]] && save_state "staged_secp_sha" "$(file_sha "$SECP_KEY_NEW")"
-    [[ -f "$BLS_KEY_NEW"   ]] && save_state "staged_bls_sha"  "$(file_sha "$BLS_KEY_NEW")"
-    [[ -f "$NODE_TOML_NEW" ]] && save_state "staged_toml_sha" "$(file_sha "$NODE_TOML_NEW")"
-
-    # Every staging file must be present, or verifiably already placed by a
-    # previous attempt, before we touch services — never leave a half-swapped
-    # identity or a key/config mismatch.
-    if ! { staged_ready "$SECP_KEY_NEW" "$SECP_KEY" staged_secp_sha \
-        && staged_ready "$BLS_KEY_NEW" "$BLS_KEY" staged_bls_sha \
-        && staged_ready "$NODE_TOML_NEW" "$NODE_TOML" staged_toml_sha; }; then
-      die "Staging files are missing — refusing to stop services." \
-        "Start a fresh run so the import and configure steps re-create them."
-    fi
+    # Every file must still match the checksum recorded when it was prepared
+    # and confirmed, or already be in place from an earlier attempt, before we
+    # touch services — never swap in content the operator never approved, and
+    # never leave a half-swapped identity.
+    verify_staged_or_placed "$SECP_KEY_NEW"  "$SECP_KEY"  staged_secp_sha "the SECP key"
+    verify_staged_or_placed "$BLS_KEY_NEW"   "$BLS_KEY"   staged_bls_sha  "the BLS key"
+    verify_staged_or_placed "$NODE_TOML_NEW" "$NODE_TOML" staged_toml_sha "node.toml"
 
     # From here on the run mutates the live node: mark it, so a later run
     # without --resume refuses to start fresh over a half-swapped identity.
     save_state "cutover_started" "1"
 
+    mask_monad_services
     stop_monad_services
 
     place_staged "$SECP_KEY_NEW" "$SECP_KEY" "SECP key" || die \
@@ -1095,6 +1336,8 @@ promote() {
     # into the (now impossible) swap.
     save_state "last_step" "7"
 
+    # Identity is now consistent, so it is safe for the units to come back.
+    unmask_monad_services
     systemctl enable "${MONAD_SERVICES[@]}" 2>/dev/null || true
     if ! systemctl start "${MONAD_SERVICES[@]}"; then
       die "The validator keys are in place, but the services failed to start." \
@@ -1117,11 +1360,26 @@ promote() {
         "copies are preserved as *.bak in $BACKUP_ROOT." \
         "Retry just this export with: $0 --resume"
     fi
-    save_state "last_step" "8"
+    [[ "${VERIFY_PENDING:-0}" == "1" ]] || save_state "last_step" "8"
   fi
 
   # ── done ──
   rm -f "$SECP_KEY_NEW" "$BLS_KEY_NEW" "$NODE_TOML_NEW" 2>/dev/null || true
+
+  # The swap succeeded either way; only sync is unconfirmed. Keep the resume
+  # state so a later run re-checks, and do not print an unconditional success.
+  if [[ "${VERIFY_PENDING:-0}" == "1" ]]; then
+    echo
+    warn "${BOLD}CUTOVER COMPLETE — VERIFICATION PENDING${RESET}"
+    echo "  The validator keys and config are in place and the services are"
+    echo "  running. The node has not reported in-sync yet, which is normal for"
+    echo "  a short while after a migration."
+    echo
+    echo "  Nothing to do now. Re-check when you want:  ${BOLD}$0 --resume${RESET}"
+    echo
+    return 0
+  fi
+
   clear_state
   echo
   echo "${GREEN}════════════════════════════════════════════════════════════${RESET}"
@@ -1297,6 +1555,9 @@ fi
 
 refuse_legacy_state
 secure_state_dir
+# Exclusive for the whole live run. Taken before any state is read or written,
+# so a second process is refused without touching state or node files.
+acquire_run_lock
 validate_state_consistency
 
 if ! $RESUME && [[ -f "$STATE_FILE" ]]; then

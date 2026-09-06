@@ -7,9 +7,50 @@
 #                  MOCK_CRASH_AFTER_START is set → exit 0 but stay inactive
 #                  (simulates a service that dies right after starting)
 #   is-active  → exit 0 iff the marker exists
+#   mask/unmask→ per-unit marker files; is-enabled prints "masked" while set.
+#                MOCK_MASK_FAIL makes mask a silent no-op so the tool's
+#                verify-the-mask path can be exercised.
+#                MOCK_PREMASKED lists units that are already masked at start.
 echo "systemctl $*" >> "${MOCK_LOG:-/dev/null}"
 MARKER="${MOCK_LOG:-/tmp/mock-systemctl}.active"
+MASKDIR="${MOCK_LOG:-/tmp/mock-systemctl}.masked.d"
+
+_premask_seed() {
+  [[ -n "${MOCK_PREMASKED:-}" ]] || return 0
+  mkdir -p "$MASKDIR"
+  local u
+  for u in $MOCK_PREMASKED; do touch "$MASKDIR/$u"; done
+}
+_premask_seed
+
 case "${1:-}" in
+  mask)
+    [[ -n "${MOCK_MASK_FAIL:-}" ]] && exit 0
+    mkdir -p "$MASKDIR"; shift
+    for u in "$@"; do [[ "$u" == --* ]] || touch "$MASKDIR/$u"; done
+    exit 0 ;;
+  unmask)
+    shift
+    for u in "$@"; do [[ "$u" == --* ]] || rm -f "$MASKDIR/$u"; done
+    exit 0 ;;
+  is-enabled)
+    shift
+    for u in "$@"; do
+      [[ "$u" == --* ]] && continue
+      if [[ -f "$MASKDIR/$u" ]]; then echo masked; exit 0; fi
+      echo enabled; exit 0
+    done
+    exit 1 ;;
+  start)
+    # A masked unit cannot be started, exactly like the real thing.
+    for u in "${@:2}"; do
+      [[ "$u" == --* ]] && continue
+      if [[ -f "$MASKDIR/$u" ]]; then
+        echo "Failed to start $u: Unit $u is masked." >&2
+        exit 1
+      fi
+    done
+    ;;&
   stop)
     rm -f "$MARKER"
     exit 0 ;;

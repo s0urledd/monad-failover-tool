@@ -7,6 +7,33 @@ for arg in "$@"; do
     printf '203.0.113.7'
     exit 0
   fi
+  if [[ "$arg" == *validator-data* ]]; then
+    # Foundation snapshot. Knobs let tests drive each guard in the lookup:
+    #   MOCK_FOUNDATION_FAIL     endpoint unreachable
+    #   MOCK_FOUNDATION_STALE    snapshot far older than the freshness limit
+    #   MOCK_FOUNDATION_NOPEER   validator present, but no name record published
+    #   MOCK_FOUNDATION_DUP      the same secp listed twice
+    #   MOCK_FOUNDATION_BLS      entry whose BLS does not match the imported key
+    #   MOCK_FOUNDATION_NET      snapshot labelled with a different network
+    #   MOCK_FOUNDATION_SEQ      published record_seq_num (default 7)
+    [[ -n "${MOCK_FOUNDATION_FAIL:-}" ]] && exit 22
+    epoch="$(date +%s)"
+    [[ -n "${MOCK_FOUNDATION_STALE:-}" ]] && epoch=$(( epoch - 864000 ))
+    net="${MOCK_FOUNDATION_NET:-testnet}"
+    seq="${MOCK_FOUNDATION_SEQ:-7}"
+    secp="0xSECP1111111111111111111111111111111111111111"
+    bls="0xBLS2222222222222222222222222222222222222222"
+    [[ -n "${MOCK_FOUNDATION_BLS:-}" ]] && bls="0xBLSdifferentkey0000000000000000000000000000"
+    peer=", \"peer\": {\"address\": \"198.51.100.5\", \"tcp_port\": 8000, \"udp_port\": 8000, \"auth_port\": 8001, \"record_seq_num\": $seq, \"name_record_sig\": \"0xdead\"}"
+    [[ -n "${MOCK_FOUNDATION_NOPEER:-}" ]] && peer=""
+    entry="{\"id\": 1, \"name\": \"MockVal\", \"secp\": \"$secp\", \"bls\": \"$bls\"$peer}"
+    other="{\"id\": 2, \"name\": \"Other\", \"secp\": \"0xSECPffffffffffffffffffffffffffffffffffffff\", \"bls\": \"0xBLSf\", \"peer\": {\"record_seq_num\": 3}}"
+    body="$entry, $other"
+    [[ -n "${MOCK_FOUNDATION_DUP:-}" ]] && body="$entry, $entry"
+    printf '{"chain_id": "143", "count": 2, "expected_version": "0.16.1", "fetched_at_epoch": %s, "network": "%s", "validators": [%s]}' \
+      "$epoch" "$net" "$body"
+    exit 0
+  fi
   if [[ "$arg" == *huginn.tech* ]]; then
     if [[ -n "${MOCK_API_FAIL:-}" ]]; then
       exit 22
