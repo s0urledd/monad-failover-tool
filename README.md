@@ -26,13 +26,13 @@ know of a later one.
 
 ## Install
 
-Pinned to a release tag, so what you download never changes after the fact:
+Pinned to a release tag and verified against the checksum below:
 
 ```bash
 curl -fsSLo /usr/local/bin/monad-failover \
-  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.2/monad-failover.sh
+  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.3/monad-failover.sh
 
-echo "046b45df9d343a8bb82c09ca5546c864bf43a715bf0f31050850e4495a39b90a  /usr/local/bin/monad-failover" | sha256sum -c -
+echo "1ee39c5bed2b8e4b8efda99af5d1f460d1c50bbc7dd7d8b6f6fd262897f36677  /usr/local/bin/monad-failover" | sha256sum -c -
 chmod 755 /usr/local/bin/monad-failover
 ```
 
@@ -42,7 +42,8 @@ mismatch, so there is nothing to eyeball. It installs to root-owned
 
 ## Run
 
-Start with a dry run. It checks everything and changes nothing:
+Start with a dry run. It checks prerequisites without changing the node; it does
+not perform a real signing or migration test:
 
 ```bash
 monad-failover --dry-run   # read-only preflight
@@ -51,7 +52,7 @@ monad-failover             # live run
 
 | Flag | Effect |
 |---|---|
-| `--dry-run` | run every preflight check read-only; touch nothing |
+| `--dry-run` | check prerequisites read-only; touch nothing |
 | `--backup-dir PATH` | where `secp-backup` / `bls-backup` live; skips the key-source prompt |
 | `--public-ip IP` | use this IPv4 in the name record instead of auto-detecting |
 | `--resume` | pick up where a previous run left off |
@@ -98,6 +99,12 @@ Run `monad-failover --resume`. It works out how far the previous run got and
 continues from there, including part-way through the cutover. It never repeats a
 step that already completed, and it refuses to start a fresh run over an
 unfinished cutover. Every live run is logged to `/opt/monad/failover-logs/`.
+
+## Uninstall
+
+After migration and verification are complete, remove the tool with
+`sudo rm -- /usr/local/bin/monad-failover`. This leaves Monad, your key backups
+and run logs intact; keep the backups for recovery.
 
 ## Supported Monad versions
 

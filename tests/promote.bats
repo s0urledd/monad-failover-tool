@@ -1434,3 +1434,112 @@ EOF
   [[ "$output" == *"not complete JSON"* ]]
   grep -q '^self_record_seq_num = 8' "$MONAD_HOME/monad-bft/config/node.toml"
 }
+
+normal_run() {
+  run bash "$SCRIPT" --backup-dir "$BACKUP_ROOT" --public-ip 203.0.113.7 <<EOF
+y
+y
+${TEST_BENEFICIARY:-0xBEEF00000000000000000000000000000000BEEF}
+${TEST_NAME:-validator-one}
+8
+STOPPED
+y
+EOF
+}
+
+@test "independent: dry run preserves node files and creates no state or log" {
+  make_healthy_env
+  before="$(find "$MONAD_HOME" -type f -exec sha256sum {} + | sort)"
+  run bash "$SCRIPT" --dry-run
+  [ "$status" -eq 0 ]
+  [ "$before" = "$(find "$MONAD_HOME" -type f -exec sha256sum {} + | sort)" ]
+  [ ! -e "$MF_STATE_DIR" ]
+  [ ! -e "$LOG_DIR" ]
+  ! grep -Eq 'systemctl (stop|start|mask|unmask)' "$MOCK_LOG"
+}
+
+@test "independent: normal flow produces valid TOML and no secret in logs" {
+  make_healthy_env
+  normal_run
+  [ "$status" -eq 0 ]
+  ! grep -RqE "$SECP_IKM|$BLS_IKM|testpass" "$LOG_DIR"
+  python3 -c 'import tomllib,sys; c=tomllib.load(open(sys.argv[1],"rb")); assert c["peer_discovery"]["self_address"]=="203.0.113.7:8000"; assert c["peer_discovery"]["self_auth_port"]==8001; assert c["fullnode_raptorcast"]["enable_publisher"] is True; assert c["statesync"]["expand_to_group"] is True' "$MONAD_HOME/monad-bft/config/node.toml"
+  # Original fixture files retain their modes through cp -a and .bak rotation;
+  # their enclosing backup directory must be private. Check newly exported secrets.
+  [ "$(stat -c %a "$BACKUP_ROOT")" = 700 ]
+  [ "$(stat -c %a "$MF_STATE_DIR")" = 700 ]
+  [ "$(stat -c %a "$LOG_DIR")" = 700 ]
+  [ "$(stat -c %a "$BACKUP_ROOT/secp-backup")" = 600 ]
+  [ "$(stat -c %a "$BACKUP_ROOT/bls-backup")" = 600 ]
+}
+
+@test "independent: env content is never executed" {
+  make_healthy_env
+  printf '\ntouch %s\n' "$BATS_TEST_TMPDIR/executed" >> "$MONAD_HOME/.env"
+  run bash "$SCRIPT" --dry-run
+  [ "$status" -eq 0 ]
+  [ ! -e "$BATS_TEST_TMPDIR/executed" ]
+}
+
+@test "independent: invalid node name aborts before service changes" {
+  make_healthy_env
+  TEST_NAME='bad"name'
+  normal_run
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"node_name may contain"* ]]
+  ! grep -Eq 'systemctl (stop|start|mask|unmask)' "$MOCK_LOG"
+}
+
+@test "independent: RPC bound to specific public IP must not report unexposed" {
+  make_healthy_env
+  mkdir "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\nprintf "State Recv-Q Send-Q Local Peer\\nLISTEN 0 128 203.0.113.7:8080 0.0.0.0:*\\n"\n' > "$BATS_TEST_TMPDIR/bin/ss"
+  chmod +x "$BATS_TEST_TMPDIR/bin/ss"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  run bash "$SCRIPT" --dry-run
+  printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/rpc-output.txt"
+  [[ "$output" == *"RPC ports listening on non-loopback interfaces: 8080"* ]]
+}
+
+@test "independent: explicitly entered zero beneficiary must warn" {
+  make_healthy_env
+  TEST_BENEFICIARY=0x0000000000000000000000000000000000000000
+  normal_run
+  [[ "$output" == *"ZERO address"* ]]
+}
+
+@test "independent: section-scoped TOML update must preserve unrelated table" {
+  make_healthy_env
+  printf '\n[unrelated]\nenable_client = false\n' >> "$MONAD_HOME/monad-bft/config/node.toml"
+  normal_run
+  [ "$status" -eq 0 ]
+  python3 -c 'import tomllib,sys; c=tomllib.load(open(sys.argv[1],"rb")); assert c["unrelated"]["enable_client"] is False' "$MONAD_HOME/monad-bft/config/node.toml"
+}
+
+@test "config: missing fields are inserted into their own tables" {
+  make_healthy_env
+  sed -i '/^enable_client =/d; /^self_auth_port =/d; /^expand_to_group =/d' "$MONAD_HOME/monad-bft/config/node.toml"
+  normal_run
+  [ "$status" -eq 0 ]
+  python3 -c 'import tomllib,sys; c=tomllib.load(open(sys.argv[1],"rb")); assert c["peer_discovery"]["self_auth_port"]==8001; assert c["fullnode_raptorcast"]["enable_client"] is True; assert c["statesync"]["expand_to_group"] is True' "$MONAD_HOME/monad-bft/config/node.toml"
+}
+
+@test "config: duplicate root key is rejected before cutover" {
+  make_healthy_env
+  sed -i '/^beneficiary =/a beneficiary = "0x0000000000000000000000000000000000000000"' "$MONAD_HOME/monad-bft/config/node.toml"
+  normal_run
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Cannot uniquely set"* ]]
+  ! grep -Eq 'systemctl (stop|start|mask|unmask)' "$MOCK_LOG"
+}
+
+@test "RPC: loopback IPv4 and IPv6 listeners do not warn" {
+  make_healthy_env
+  mkdir "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\nprintf "State Recv-Q Send-Q Local Peer\\nLISTEN 0 128 127.0.0.1:8080 0.0.0.0:*\\nLISTEN 0 128 [::1]:8081 [::]:*\\n"\n' > "$BATS_TEST_TMPDIR/bin/ss"
+  chmod +x "$BATS_TEST_TMPDIR/bin/ss"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  run bash "$SCRIPT" --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"No non-loopback RPC listeners found"* ]]
+}

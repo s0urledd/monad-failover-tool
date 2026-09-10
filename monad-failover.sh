@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.9.2"
+VERSION="1.9.3"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -377,17 +377,23 @@ check_rpc() {
   local listeners exposed=()
   listeners="$(ss -ltn 2>/dev/null | awk '{print $4}' || true)"
   for port in "${RPC_PORTS[@]}"; do
-    if echo "$listeners" | grep -qE "^(0\.0\.0\.0|\*|\[::\]):${port}$"; then
+    if echo "$listeners" | awk -v port="$port" '
+      $0 ~ ":" port "$" {
+        host=$0; sub(/:[0-9]+$/, "", host)
+        if (host !~ /^127\./ && host != "[::1]" && host != "::1" && host != "localhost") found=1
+      }
+      END {exit !found}
+    '; then
       exposed+=("$port")
     fi
   done
   if [[ ${#exposed[@]} -gt 0 ]]; then
-    warn "RPC ports listening on all interfaces: ${exposed[*]}"
+    warn "RPC ports listening on non-loopback interfaces: ${exposed[*]}"
     echo "  Validators should not expose RPC publicly. If a firewall (ufw etc.)"
     echo "  already blocks these ports from outside, you are fine as is."
     echo "  Otherwise bind them to localhost or block them now."
   else
-    ok "No RPC ports publicly exposed (checked: ${RPC_PORTS[*]})"
+    ok "No non-loopback RPC listeners found (checked: ${RPC_PORTS[*]}; firewall not checked)"
   fi
 }
 
@@ -478,19 +484,31 @@ fix_ownership() {
 
 set_toml_value() {
   local file="$1" key="$2" value="$3" section="${4:-}"
-  local esc; esc="$(sed_escape_replacement "$value")"
-
-  if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null; then
-    sed -i "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = ${esc}|" "$file"
-  elif [[ -z "$section" ]]; then
-    die "Key '$key' not found in $file and no section given — refusing to append blindly."
-  elif grep -qF "[$section]" "$file"; then
-    sed -i "\\|^\\[$section\\]|a ${key} = ${esc}" "$file"
-  else
-    die "Section [$section] not found in $file — cannot place '$key'."
+  local tmp; tmp="$(mktemp "${file}.edit.XXXXXX")"
+  # Limit edits to the requested table (or the root keys). ENVIRON preserves
+  # literal replacement text without awk -v interpreting backslash escapes.
+  if ! MF_TOML_VALUE="$value" awk -v key="$key" -v section="$section" '
+    BEGIN {active=(section == ""); found=0; seen=active}
+    /^[[:space:]]*\[/ {
+      if (active && !found && section != "") {print key " = " ENVIRON["MF_TOML_VALUE"]; found=1}
+      header=$0; sub(/[[:space:]]*#.*/, "", header)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", header)
+      active=(section != "" && header == "[" section "]")
+      if (active) seen=1
+    }
+    active && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+      print key " = " ENVIRON["MF_TOML_VALUE"]; found++; next
+    }
+    {print}
+    END {
+      if (active && !found && section != "") {print key " = " ENVIRON["MF_TOML_VALUE"]; found=1}
+      if (!seen || found != 1) exit 1
+    }
+  ' "$file" > "$tmp"; then
+    rm -f "$tmp"
+    die "Cannot uniquely set '$key' in ${section:-root} of $file."
   fi
-
-  grep -qF "${key} = ${value}" "$file" || die "Failed to write '$key' to $file"
+  mv "$tmp" "$file"
 }
 
 verify_config_flags() {
@@ -1339,6 +1357,9 @@ promote() {
         || die "beneficiary must be a 0x-prefixed 40-hex-character address"
       set_toml_value "$NODE_TOML_NEW" "beneficiary" "\"$BENEFICIARY\""
       ok "Beneficiary: $BENEFICIARY"
+      if [[ "$BENEFICIARY" =~ ^0x0{40}$ ]]; then
+        warn "You entered the ZERO address. This validator will have no beneficiary set."
+      fi
     else
       # Blank means "keep what is there", so show exactly what that is and get
       # a yes for it. Rewards go to this address; a silent wrong value is the
@@ -1682,7 +1703,8 @@ mode_dry_run() {
     echo "${RED}✗${RESET} ${BOLD}Preflight failed${RESET} — $fails blocking issue(s), $warns warning(s)."
     exit 1
   fi
-  ok "${BOLD}Preflight passed${RESET} — $warns warning(s). This server is ready for a live run."
+  ok "${BOLD}Preflight passed${RESET} — $warns warning(s). Review warnings before the live run."
+  echo "  Signing and cutover are checked during the live run, not this dry run."
   echo
 }
 

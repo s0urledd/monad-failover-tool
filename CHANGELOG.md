@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.9.3 — 2026-09-10
+
+- Detect RPC listeners on specific non-loopback addresses as well as wildcard
+  addresses, without claiming to verify external firewall reachability.
+- Warn when the zero beneficiary is entered explicitly, using the existing flow.
+- Restrict config edits to the requested TOML table and reject ambiguous keys.
+- Clarify dry-run scope and add a short uninstall instruction.
+- Add independent usage, secret-handling and config regression tests.
+
 ## 1.9.2 — 2026-09-06
 
 Independent verification of a pre-release audit against the current code, the
