@@ -89,6 +89,8 @@ make_healthy_env() {
   run bash "$SCRIPT" --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"valid IKM format"* ]]
+  [[ "$output" == *"validator identity NOT verified"* ]]
+  [[ "$output" == *"this full node's own backups"* ]]
   [[ "$output" == *"Preflight passed"* ]]
 }
 
@@ -1499,6 +1501,7 @@ EOF
   run bash "$SCRIPT" --dry-run
   printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/rpc-output.txt"
   [[ "$output" == *"RPC ports listening on non-loopback interfaces: 8080"* ]]
+  [[ "$output" == *"1 warning(s)"* ]]
 }
 
 @test "independent: explicitly entered zero beneficiary must warn" {
@@ -1542,4 +1545,5 @@ EOF
   run bash "$SCRIPT" --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"No non-loopback RPC listeners found"* ]]
+  [[ "$output" == *"0 warning(s)"* ]]
 }

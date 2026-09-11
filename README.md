@@ -30,9 +30,9 @@ Pinned to a release tag and verified against the checksum below:
 
 ```bash
 curl -fsSLo /usr/local/bin/monad-failover \
-  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.3/monad-failover.sh
+  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.4/monad-failover.sh
 
-echo "1ee39c5bed2b8e4b8efda99af5d1f460d1c50bbc7dd7d8b6f6fd262897f36677  /usr/local/bin/monad-failover" | sha256sum -c -
+echo "aa1d6551f2921cc055d65527644c30d488d43d837080d3ed22904407c499726b  /usr/local/bin/monad-failover" | sha256sum -c -
 chmod 755 /usr/local/bin/monad-failover
 ```
 

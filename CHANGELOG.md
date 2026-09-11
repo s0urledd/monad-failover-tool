@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.4 — 2026-09-11
+
+- Count RPC warnings in the dry-run summary.
+- Clarify that backup checks validate IKM format, not validator identity;
+  the default directory may contain the full node's own backups.
+
 ## 1.9.3 — 2026-09-10
 
 - Detect RPC listeners on specific non-loopback addresses as well as wildcard

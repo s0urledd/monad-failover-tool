@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.9.3"
+VERSION="1.9.4"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -368,8 +368,10 @@ check_sync() {
 RPC_PORTS=(8080 8081 8545 8546 9545 9546 18545 18546)
 
 check_rpc() {
+  RPC_WARNINGS=0
   step "RPC EXPOSURE CHECK"
   if ! command -v ss >/dev/null 2>&1; then
+    RPC_WARNINGS=1
     warn "ss not found — cannot check RPC exposure."
     echo "  Verify manually that none of these ports listen publicly: ${RPC_PORTS[*]}"
     return 0
@@ -388,6 +390,7 @@ check_rpc() {
     fi
   done
   if [[ ${#exposed[@]} -gt 0 ]]; then
+    RPC_WARNINGS=1
     warn "RPC ports listening on non-loopback interfaces: ${exposed[*]}"
     echo "  Validators should not expose RPC publicly. If a firewall (ufw etc.)"
     echo "  already blocks these ports from outside, you are fine as is."
@@ -1664,15 +1667,18 @@ mode_dry_run() {
   fi
 
   check_rpc
+  warns=$((warns + RPC_WARNINGS))
 
   step "KEY BACKUP FILES"
+  echo "  Format check only: validator identity is NOT verified."
+  echo "  These may be this full node's own backups. Select the validator's backups in the live run."
   local dir="$KEY_SOURCE_DIR" f ikm
   [[ -z "$dir" || "$dir" == "-" ]] && dir="$BACKUP_ROOT"
   for f in secp-backup bls-backup; do
     if [[ -f "$dir/$f" ]]; then
       ikm="$(extract_ikm_from_backup "$dir/$f")"
       if validate_ikm "$ikm" >/dev/null; then
-        ok "$dir/$f (valid IKM format)"
+        ok "$dir/$f (valid IKM format; validator identity NOT verified)"
       else
         warn "$dir/$f exists but contains no valid IKM"; warns=$((warns + 1))
       fi
