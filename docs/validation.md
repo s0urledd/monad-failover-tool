@@ -49,6 +49,16 @@ VM boots. They do not establish abrupt power-loss durability, every possible
 crash window, or real Monad consensus behavior. The panel action did **not**
 exercise forced power-off. See the [reboot procedure](reboot-test.md).
 
+The tested commit predates the current release, so the two were compared function
+by function. `mask_monad_services`, `unmask_monad_services`, `startable_services`,
+`place_verified`, `check_live_file` and `verify_live_identity` are byte-identical
+in v1.9.4. The functions that did change are `check_rpc`, `set_toml_value`,
+`mode_dry_run` and `promote`, and each of those changes runs before cutover.
+
+That keeps the mechanism these runs exercised unchanged. It is not a claim that
+v1.9.4 was itself reboot-tested, and identical functions on their own do not
+prove the surrounding call path is identical.
+
 ## Signer compatibility
 
 A separate operator probe using a throwaway key captured output from an installed

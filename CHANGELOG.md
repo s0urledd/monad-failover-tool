@@ -228,7 +228,7 @@ until services are actually up.
 ## 1.5.1 — 2026-07-15
 
 - Battle-tested section in the README with a full render of the live mainnet
-  migration run (docs/mainnet-run.png).
+  migration run ([docs/mainnet-run.png as of that release](https://github.com/s0urledd/monad-failover-tool/blob/e5564a03a58fbbd0500b015e9859678de271d8ec/docs/mainnet-run.png)).
 - Dry-run's planned-actions list updated to the current seq semantics (the
   value you enter is used verbatim; the old "previous + 1" wording was stale).
 
