@@ -46,11 +46,12 @@ Run as root on the target full node. The download is pinned to a release tag and
 checked before anything is installed:
 
 ```bash
-curl -fsSLo /usr/local/bin/.monad-failover.new \
+new="$(mktemp /usr/local/bin/.monad-failover.XXXXXX)" &&
+curl -fsSLo "$new" \
   https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.4/monad-failover.sh &&
-echo "aa1d6551f2921cc055d65527644c30d488d43d837080d3ed22904407c499726b  /usr/local/bin/.monad-failover.new" | sha256sum -c - &&
-install -m 755 /usr/local/bin/.monad-failover.new /usr/local/bin/monad-failover &&
-rm -f /usr/local/bin/.monad-failover.new
+echo "aa1d6551f2921cc055d65527644c30d488d43d837080d3ed22904407c499726b  $new" | sha256sum -c - &&
+install -m 755 "$new" /usr/local/bin/monad-failover &&
+rm -f "$new"
 ```
 
 `sha256sum -c` prints `OK` for the downloaded file and fails loudly on any
@@ -60,11 +61,12 @@ installed untouched and the chain stops with that step's exit status. `curl`
 writing straight to the destination would overwrite it, and keep its mode,
 before the check ever runs.
 
-Staging inside `/usr/local/bin` is what keeps this to four plain commands: only
-root can write there, whereas a fixed name under `/tmp` would let a local user
-redirect the write. It installs there for the same reason, since it runs as
-root. After a failed check the staging file stays behind, not executable, if you
-want to look at it.
+The staging file sits in root-owned `/usr/local/bin`, which is what keeps an
+unprivileged user from redirecting the write, and `mktemp` gives it a name of
+its own, so two installs started at once cannot end up sharing it. It installs
+to the same directory because it runs as root. After a failed check the staging
+file stays behind as `.monad-failover.XXXXXX`, mode `600`, for you to inspect or
+delete.
 
 ## Run
 
