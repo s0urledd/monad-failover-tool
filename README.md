@@ -42,28 +42,16 @@ if that is higher than the snapshot suggestion.
 
 ## Install
 
-Run as root on the target full node. The download is pinned to a release tag and
-checked before anything is installed:
+Run as root on the target full node:
 
 ```bash
-(
-  set -e
-  tmp="$(mktemp)"
-  trap 'rm -f "$tmp"' EXIT
-  curl -fsSLo "$tmp" \
-    https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.4/monad-failover.sh
-  echo "aa1d6551f2921cc055d65527644c30d488d43d837080d3ed22904407c499726b  $tmp" | sha256sum -c -
-  install -m 755 "$tmp" /usr/local/bin/monad-failover
-)
+curl -fsSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.4/monad-failover.sh &&
+echo "aa1d6551f2921cc055d65527644c30d488d43d837080d3ed22904407c499726b  monad-failover.sh" | sha256sum -c - &&
+install -m 755 monad-failover.sh /usr/local/bin/monad-failover
 ```
 
-`sha256sum -c` prints `OK` for the downloaded file and fails loudly on any
-mismatch, so there is nothing to eyeball. The download lands in a temporary file
-first, so a failed check leaves whatever is already installed untouched: `curl`
-writing straight to the destination would overwrite it, and keep its mode, before
-the check ever runs. The subshell carries out the failing step's exit status, so
-`echo $?` after the block tells you whether it installed, and the cleanup runs
-either way. It installs to root-owned `/usr/local/bin` because it runs as root.
+The checksum is verified before installation. If the download or verification
+fails, your existing installation stays unchanged.
 
 ## Run
 
