@@ -47,8 +47,7 @@ checked before anything is installed:
 
 ```bash
 new="$(mktemp /usr/local/bin/.monad-failover.XXXXXX)" &&
-curl -fsSLo "$new" \
-  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.4/monad-failover.sh &&
+curl -fsSLo "$new" https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.4/monad-failover.sh &&
 echo "aa1d6551f2921cc055d65527644c30d488d43d837080d3ed22904407c499726b  $new" | sha256sum -c - &&
 install -m 755 "$new" /usr/local/bin/monad-failover &&
 rm -f "$new"
