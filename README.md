@@ -42,30 +42,23 @@ if that is higher than the snapshot suggestion.
 
 ## Install
 
-Run as root on the target full node. The download is pinned to a release tag and
-checked before anything is installed:
+Download it, check it, then put it in place. Run as root on the target full node.
 
 ```bash
-new="$(mktemp /usr/local/bin/.monad-failover.XXXXXX)" &&
-curl -fsSLo "$new" https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.4/monad-failover.sh &&
-echo "aa1d6551f2921cc055d65527644c30d488d43d837080d3ed22904407c499726b  $new" | sha256sum -c - &&
-install -m 755 "$new" /usr/local/bin/monad-failover &&
-rm -f "$new"
+curl -fsSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.4/monad-failover.sh
+echo "aa1d6551f2921cc055d65527644c30d488d43d837080d3ed22904407c499726b  monad-failover.sh" | sha256sum -c -
+install -m 755 monad-failover.sh /usr/local/bin/monad-failover
 ```
 
-`sha256sum -c` prints `OK` for the downloaded file and fails loudly on any
-mismatch, so there is nothing to eyeball. The download lands next to the
-destination rather than on it, so a failed check leaves whatever is already
-installed untouched and the chain stops with that step's exit status. `curl`
-writing straight to the destination would overwrite it, and keep its mode,
-before the check ever runs.
+The middle line prints `monad-failover.sh: OK`. If it prints `FAILED`, stop
+there: the file you downloaded is not the one this checksum describes, and
+nothing has been installed yet. The first line is pinned to the `v1.9.4` tag, so
+what you get cannot change after the fact.
 
-The staging file sits in root-owned `/usr/local/bin`, which is what keeps an
-unprivileged user from redirecting the write, and `mktemp` gives it a name of
-its own, so two installs started at once cannot end up sharing it. It installs
-to the same directory because it runs as root. After a failed check the staging
-file stays behind as `.monad-failover.XXXXXX`, mode `600`, for you to inspect or
-delete.
+Nothing touches `/usr/local/bin` until the third line, which is why a bad
+download cannot replace a working copy. Afterwards you can delete
+`monad-failover.sh` from wherever you downloaded it; the installed copy stands on
+its own.
 
 ## Run
 
