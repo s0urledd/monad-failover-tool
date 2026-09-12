@@ -5,34 +5,50 @@
 
 Promotes a synced Monad full node to a validator, following the official
 [node migration](https://docs.monad.xyz/node-ops/node-recovery/node-migration) procedure.
-It is built for the worst case: the old validator server is gone. All it needs is a
-synced full node and your validator key backups.
+Use it for a planned migration or recovery when the old server is unavailable.
+It runs on the target full node using your validator key backups, with no
+connection to the old server required.
+
+## How it works
+
+1. **Prepare:** Check sync and RPC listeners, back up the full node's identity,
+   and prepare the validator keys and signed config in protected staging.
+   You confirm the public keys, beneficiary and name record sequence.
+2. **Switch:** After you confirm the old validator is stopped or offline, the
+   tool masks and stops the target services, verifies the staged files, swaps
+   them into place, and starts the services with the validator identity.
+3. **Verify:** Check service health and sync, then export fresh key backups.
+   If sync verification is still pending, the tool reports that explicitly.
+
+The tool does not stop the old validator remotely: you stop it yourself, or
+ensure it is fully offline, before typing `STOPPED`. Preparation happens before
+this gate; the target's running keys and config are replaced only at cutover.
 
 ## What you need
 
 - A full node synced to the tip, with its services running.
-- Your `secp-backup` and `bls-backup` files, copied onto this server. They are
-  created during the official
-  [full node installation](https://docs.monad.xyz/node-ops/full-node-installation#generate-keystores);
-  keep copies off-server. If you do not have them, you can paste the raw IKM
-  values instead (hidden input).
+- The **validator's** `secp-backup` and `bls-backup` files, copied onto this
+  server. The full node may have its own files with the same names; select the
+  validator's backup directory when prompted. Raw IKM entry is also supported
+  with hidden input. Keep backup copies off-server.
 - The beneficiary address from the old validator. If you leave it blank the
   tool shows the address already in this node's config and asks you to confirm it.
+- The old validator's `node_name`, which the live run asks you to enter.
 
-You do not need to look up the name record sequence number. The tool reads the
-last published value for your key from Monad Foundation's validator snapshot and
-suggests the next one. Press Enter to accept it, or type a higher number if you
-know of a later one.
+When a matching record is available in Monad Foundation's validator snapshot,
+the tool suggests the next sequence number. Otherwise it asks you to enter one.
+Use a number higher than any previously used by this validator identity, even
+if that is higher than the snapshot suggestion.
 
 ## Install
 
-Pinned to a release tag and verified against the checksum below:
+Run as root on the target full node. The download is pinned to a release tag;
+verify it against the checksum below:
 
 ```bash
 curl -fsSLo /usr/local/bin/monad-failover \
-  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.4/monad-failover.sh
-
-echo "aa1d6551f2921cc055d65527644c30d488d43d837080d3ed22904407c499726b  /usr/local/bin/monad-failover" | sha256sum -c -
+  https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.4/monad-failover.sh &&
+echo "aa1d6551f2921cc055d65527644c30d488d43d837080d3ed22904407c499726b  /usr/local/bin/monad-failover" | sha256sum -c - &&
 chmod 755 /usr/local/bin/monad-failover
 ```
 
@@ -58,47 +74,33 @@ monad-failover             # live run
 | `--resume` | pick up where a previous run left off |
 | `--version` | print version and exit |
 
-## What you will see
+## Migration walkthrough
 
-The run is interactive and asks for confirmation before anything irreversible.
-It goes through eight phases:
+![Mainnet migration screenshot replay](docs/mainnet-migration.gif)
 
-1. Sync and RPC checks, and a confirmation that you are on the right host.
-2. This node's own identity is backed up to `/opt/monad/backup/failover-<timestamp>/`.
-3. Your validator keys are imported to staging files, and their public keys are
-   shown for you to confirm.
-4. Beneficiary, node name and the required flags are set on a staging copy of
-   `node.toml`.
-5. The sequence number is suggested from the Foundation snapshot; you accept or
-   override it.
-6. The name record is signed and patched into the staging config.
-7. You confirm the old validator is stopped by typing `STOPPED`, then the keys
-   and config are swapped in and the services start as a validator.
-8. Every service must come up active, then the node's sync status and the
-   [monval](https://monval.huginn.tech/) uptime API are checked.
+From the September 11, 2026 mainnet migration using v1.9.4. This is a sequence
+of screenshot excerpts, not a real-time recording; playback timing is illustrative.
+The server IP is partially redacted.
 
-Nothing on the live node changes before phase 7. Abort at any prompt up to that
-point and the full node is exactly as it was.
+<details>
+<summary>View all four full-size screenshots</summary>
 
-If the node has not caught up by the end of phase 8, the run says so plainly
-instead of claiming success, and tells you the one command to re-check later.
+![Preflight and validator key import](docs/mainnet-run-1.png)
 
-![Preflight, host confirmation and config backup](docs/run-1.png)
+![Beneficiary, sequence and name record signing](docs/mainnet-run-2.png)
 
-![Validator key import from backup files](docs/run-2.png)
+![Cutover and service verification](docs/mainnet-run-3.png)
 
-![Beneficiary, node name and seq_num configuration](docs/run-3.png)
+![Completion and fresh backups](docs/mainnet-run-4.png)
 
-![Name record signing and cutover](docs/run-4.png)
-
-![Post-cutover verification and completion](docs/run-5.png)
+</details>
 
 ## If a run is interrupted
 
-Run `monad-failover --resume`. It works out how far the previous run got and
-continues from there, including part-way through the cutover. It never repeats a
-step that already completed, and it refuses to start a fresh run over an
-unfinished cutover. Every live run is logged to `/opt/monad/failover-logs/`.
+Run `monad-failover --resume` to continue, including after a partial cutover.
+The tool refuses a fresh run over an unfinished cutover. The full node's original
+identity is backed up under `/opt/monad/backup/failover-<timestamp>/`, and live
+runs are logged to `/opt/monad/failover-logs/`.
 
 ## Uninstall
 
@@ -108,19 +110,17 @@ and run logs intact; keep the backups for recovery.
 
 ## Supported Monad versions
 
-Verified against the name record signer shipped in monad **v0.16.1**, on a real
-node using a throwaway key. That signer prints the address and each port on its
-own line, while `node.toml` carries one combined `self_address = "IP:PORT"` plus
-a separate `self_auth_port`, so the tool assembles the address itself and copies
-the ports across. The exact output it was built against is kept in the test
-suite as a fixture. If a future release changes the shape, the run stops before
-anything is written rather than guessing.
+Signer compatibility was checked on a real node running Monad **v0.16.1**, using
+a throwaway key. See the [compatibility details](docs/validation.md#signer-compatibility)
+for the captured output and scope.
 
-## Battle-tested
+## Verified in practice
 
-Proven in a live mainnet migration on Monad v0.14.5 (July 2026): the Huginn
-validator was moved to a fresh full node with this script. That run surfaced two
-real signer behaviours which are fixed and regression-locked in the test suite.
+The Huginn validator was successfully migrated on **Monad mainnet on September
+11, 2026**, using **monad-failover v1.9.4**. The operator reported no missed blocks
+during the transition. This is an observation from that migration, not a
+zero-downtime guarantee. See [validation details](docs/validation.md) for the
+recorded outcome and separate VM reboot tests.
 
 ## Notes
 
@@ -131,7 +131,9 @@ real signer behaviours which are fixed and regression-locked in the test suite.
   infrastructure. Set that up on the new server after migrating
   ([docs](https://docs.monad.xyz/node-ops/validator-delegation-program)).
 - If downstream full nodes peer with this validator, update its name record in
-  their `node.toml`.
+  their `node.toml`. Transfer any custom dedicated-full-node configuration from
+  the old validator separately; the tool updates the target's config rather
+  than copying the old server's entire `node.toml`.
 
 How the tool protects your keys, what it verifies, and every network call it
 makes are documented in [SECURITY.md](SECURITY.md).

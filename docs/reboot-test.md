@@ -6,6 +6,10 @@ that units masked beforehand stay masked. Mocks cannot prove what a real kernel
 and a real systemd do across a reboot. This is the procedure for that, and it
 needs a throwaway VM. Do not run it on a machine holding real validator keys.
 
+This mechanism was exercised on a disposable Ubuntu VPS on September 10, 2026,
+using real systemd services and mock Monad commands. Both an OS reboot and a
+graceful panel shutdown/power-on passed. See [recorded scope and results](validation.md#vm-reboot-tests).
+
 ## Setup
 
 1. Bring up a disposable Ubuntu VM and install a Monad full node on it, following
@@ -26,7 +30,7 @@ needs a throwaway VM. Do not run it on a machine holding real validator keys.
 
 3. Type `STOPPED` and confirm the cutover, then immediately interrupt the run
    part-way through the swap. The window is small, so the reliable way is to add
-   a temporary `sleep 30` between the first and second `place_staged` call in
+   a temporary `sleep 30` between the first and second `place_verified` call in
    your copy of the script, and kill the run during that sleep.
 4. With the run killed mid-swap, confirm the units are masked:
 
