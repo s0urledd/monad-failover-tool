@@ -63,9 +63,11 @@ prove the surrounding call path is identical.
 
 A separate operator probe using a throwaway key captured output from an installed
 Monad v0.16.1 signer. Its `self_address` contains the IP alone, with separate
-`self_tcp_port`, `self_udp_port` and `self_auth_port` fields. The tool combines
-the IP and matching TCP/UDP port for config `self_address`, and copies the
-authentication port, sequence and signature from the signer output.
+`self_tcp_port`, `self_udp_port` and `self_auth_port` fields. The tool passes
+the network's documented ports to the signer (TCP 8000, UDP 8000, authenticated
+UDP 8001), reads them back from its output to confirm they round-trip, and
+writes the joined address into config `self_address`. The sequence and the
+signature come from the signer.
 
 The captured format is stored in [the regression fixture](../tests/fixtures/signer-v0.16.1.out).
 Fixture tests validate parsing and config handling; they do not rerun the real

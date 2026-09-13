@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.9.4"
+VERSION="1.9.5"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -367,16 +367,12 @@ check_sync() {
 # Official Monad RPC ports (8080/8081) plus commonly exposed EVM RPC ports.
 RPC_PORTS=(8080 8081 8545 8546 9545 9546 18545 18546)
 
-check_rpc() {
-  RPC_WARNINGS=0
-  step "RPC EXPOSURE CHECK"
-  if ! command -v ss >/dev/null 2>&1; then
-    RPC_WARNINGS=1
-    warn "ss not found — cannot check RPC exposure."
-    echo "  Verify manually that none of these ports listen publicly: ${RPC_PORTS[*]}"
-    return 0
-  fi
-  local listeners exposed=()
+# Echoes the RPC ports reachable from off-host, one per line. Exit 2 means the
+# question could not be answered because ss is missing; callers phrase that
+# themselves. Shared by the dry run and the note printed after a promotion.
+rpc_exposed_ports() {
+  command -v ss >/dev/null 2>&1 || return 2
+  local listeners port
   listeners="$(ss -ltn 2>/dev/null | awk '{print $4}' || true)"
   for port in "${RPC_PORTS[@]}"; do
     if echo "$listeners" | awk -v port="$port" '
@@ -386,9 +382,48 @@ check_rpc() {
       }
       END {exit !found}
     '; then
-      exposed+=("$port")
+      printf '%s\n' "$port"
     fi
   done
+  return 0
+}
+
+# Raised after the promotion, alongside the other things the operator now has
+# to go and do. By this point the machine is a validator, which is when an
+# exposed RPC port actually matters; before the swap it is still a full node.
+rpc_closing_note() {
+  local out
+  if ! out="$(rpc_exposed_ports)"; then
+    echo
+    warn "Could not check RPC exposure: ss is not installed."
+    echo "  This server is a validator now. Check from another host that none"
+    echo "  of these ports answer: ${RPC_PORTS[*]}"
+    return 0
+  fi
+  [[ -n "$out" ]] || return 0
+  echo
+  warn "This validator is serving RPC on non-loopback interfaces: ${out//$'\n'/ }"
+  echo "  A validator should not expose RPC publicly. If a firewall already"
+  echo "  blocks these ports from outside, you are fine as is. Otherwise bind"
+  echo "  them to localhost or block them now."
+}
+
+# The dry run asks this before anything has changed, while the box is still a
+# full node. The live run does not: an exposed RPC port blocks nothing, and a
+# warning at step 1 asks an operator mid-migration to stop and think about
+# firewalls. It is raised at the end instead, once the machine really is a
+# validator. See rpc_closing_note.
+check_rpc() {
+  RPC_WARNINGS=0
+  step "RPC EXPOSURE CHECK"
+  local exposed=() out
+  if ! out="$(rpc_exposed_ports)"; then
+    RPC_WARNINGS=1
+    warn "ss not found — cannot check RPC exposure."
+    echo "  Verify manually that none of these ports listen publicly: ${RPC_PORTS[*]}"
+    return 0
+  fi
+  if [[ -n "$out" ]]; then mapfile -t exposed <<< "$out"; fi
   if [[ ${#exposed[@]} -gt 0 ]]; then
     RPC_WARNINGS=1
     warn "RPC ports listening on non-loopback interfaces: ${exposed[*]}"
@@ -1237,7 +1272,6 @@ promote() {
   if ! $RESUME || ! completed_step 1; then
     phase 1 "PREFLIGHT"
     check_sync
-    check_rpc
     save_state "last_step" "1"
   fi
 
@@ -1603,6 +1637,8 @@ promote() {
   echo
   warn "If you have downstream full nodes, update this validator's"
   echo "  name record in their node.toml to maintain connectivity."
+
+  rpc_closing_note
 
   echo
   warn "VDP: validators are required to push metrics to Monad Foundation's"

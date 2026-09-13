@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.9.5 — 2026-09-13
+
+- Raise RPC exposure after the promotion rather than in the live run's
+  preflight. The warning blocks nothing, and at step 1 it asked an operator
+  mid-migration to stop and think about firewalls. It now sits with the other
+  things to do afterwards, which is also when the machine is actually a
+  validator. `--dry-run` still reports it up front, where the operator is
+  evaluating rather than migrating.
+- State in the validation record that the name record's ports are supplied by
+  this tool, not read out of the signer.
+
 ## 1.9.4 — 2026-09-11
 
 - Count RPC warnings in the dry-run summary.

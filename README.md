@@ -45,8 +45,8 @@ if that is higher than the snapshot suggestion.
 Run as root on the target full node:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.4/monad-failover.sh &&
-echo "aa1d6551f2921cc055d65527644c30d488d43d837080d3ed22904407c499726b  monad-failover.sh" | sha256sum -c - &&
+curl -fsSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.5/monad-failover.sh &&
+echo "abfbdc12f9288ec0a231796a2ecab824ca132111c012b4cbd78312a1ef3d68bd  monad-failover.sh" | sha256sum -c - &&
 install -m 755 monad-failover.sh /usr/local/bin/monad-failover
 ```
 

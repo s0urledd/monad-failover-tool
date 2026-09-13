@@ -1536,6 +1536,45 @@ EOF
   ! grep -Eq 'systemctl (stop|start|mask|unmask)' "$MOCK_LOG"
 }
 
+@test "RPC: the live run raises exposure at the end, not in preflight" {
+  make_healthy_env
+  mkdir "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\nprintf "State Recv-Q Send-Q Local Peer\\nLISTEN 0 128 0.0.0.0:8080 0.0.0.0:*\\n"\n' > "$BATS_TEST_TMPDIR/bin/ss"
+  chmod +x "$BATS_TEST_TMPDIR/bin/ss"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  normal_run
+  [ "$status" -eq 0 ]
+  # The operator is told, but after the promotion rather than at step 1, so a
+  # migration in progress is never interrupted by a firewall question.
+  [[ "$output" == *"serving RPC on non-loopback interfaces: 8080"* ]]
+  [[ "$output" != *"RPC EXPOSURE CHECK"* ]]
+  local tail="${output##*VALIDATOR PROMOTION COMPLETE}"
+  [[ "$tail" == *"serving RPC on non-loopback interfaces"* ]]
+}
+
+@test "RPC: a clean validator gets no exposure note after promotion" {
+  make_healthy_env
+  mkdir "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\nprintf "State Recv-Q Send-Q Local Peer\\nLISTEN 0 128 127.0.0.1:8080 0.0.0.0:*\\n"\n' > "$BATS_TEST_TMPDIR/bin/ss"
+  chmod +x "$BATS_TEST_TMPDIR/bin/ss"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  normal_run
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"serving RPC on non-loopback"* ]]
+}
+
+@test "RPC: the dry run still reports exposure up front" {
+  make_healthy_env
+  mkdir "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\nprintf "State Recv-Q Send-Q Local Peer\\nLISTEN 0 128 0.0.0.0:8080 0.0.0.0:*\\n"\n' > "$BATS_TEST_TMPDIR/bin/ss"
+  chmod +x "$BATS_TEST_TMPDIR/bin/ss"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  run bash "$SCRIPT" --dry-run
+  [[ "$output" == *"RPC EXPOSURE CHECK"* ]]
+  [[ "$output" == *"RPC ports listening on non-loopback interfaces: 8080"* ]]
+  [[ "$output" == *"1 warning(s)"* ]]
+}
+
 @test "RPC: loopback IPv4 and IPv6 listeners do not warn" {
   make_healthy_env
   mkdir "$BATS_TEST_TMPDIR/bin"
