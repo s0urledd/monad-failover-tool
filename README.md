@@ -18,9 +18,9 @@ See the [validation record](docs/validation.md).
    the target's identity and imports the validator keys into protected staging.
    You confirm the public keys, beneficiary and sequence number, then the tool
    signs the name record and checks the staged config. The full node keeps running.
-2. Review the promotion summary. Stop the old validator yourself, or ensure it
-   is fully offline, and type `STOPPED`. Cutover begins only after you answer
-   yes to the final **proceed with cutover?** prompt.
+2. Preparation and signing are complete before the switch. Review the summary,
+   stop the old validator (or ensure it is offline), and type `STOPPED`.
+   When you are ready, confirm `proceed with cutover?` to start the switch.
 3. The tool rechecks the prepared files, masks and stops the target services,
    places the validator keys and config, verifies the placed files, and starts
    the services. It then checks service health and sync and exports fresh key
@@ -49,7 +49,7 @@ Run as root on the target full node:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.5/monad-failover.sh &&
-echo "3d478c3be39468608bb5a9b5b0e989c5cb512a3daaec365902a67d39ac3c05b3  monad-failover.sh" | sha256sum -c - &&
+echo "73d4c1e9176d5872912d5ab3deffad9ceb5dce73832055e799bb50707cd0361e  monad-failover.sh" | sha256sum -c - &&
 install -m 755 monad-failover.sh /usr/local/bin/monad-failover
 ```
 
@@ -113,7 +113,6 @@ Monad updates.
 The tool targets standard P2P ports: TCP/UDP `8000` and authenticated UDP `8001`.
 Custom P2P ports are not supported.
 
-- Keep the old validator offline after cutover. Never run both with the same keys.
 - Block public access to RPC and metrics ports (8080, 8081, 9143, etc.).
   Allow trusted sources only.
 - Configure [VDP metrics](https://docs.monad.xyz/node-ops/validator-delegation-program)

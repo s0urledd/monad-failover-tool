@@ -1514,11 +1514,7 @@ promote() {
     echo "└────────────────────────────────────────────────────────────"
     echo
 
-    warn "The old validator MUST be ${BOLD}stopped or fully offline${RESET} before cutover."
-    echo "  Running two nodes with the same keys corrupts this validator's"
-    echo "  consensus participation and name record."
-    echo
-    echo "  If the old server is reachable, stop it now:"
+    warn "Stop the old validator before confirming cutover, unless it is already offline."
     echo "      ${BOLD}systemctl stop monad-bft monad-execution monad-rpc${RESET}"
     echo
     local confirm_stopped
@@ -1527,9 +1523,8 @@ promote() {
     ok "Old validator confirmed stopped or offline"
 
     echo
-    warn "${BOLD}POINT OF NO RETURN${RESET}"
-    echo "  The next step stops services, swaps in the validator keys, and starts."
-    echo "  After this the old validator MUST NOT be restarted with the same keys."
+    echo "  Preparation is complete. Confirm when you are ready to begin the switch."
+    echo "  The tool will verify the prepared files, replace the identity and start services."
     echo
     confirm_yn "proceed with cutover?" || die "Aborted."
 
