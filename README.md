@@ -89,10 +89,7 @@ server. See [recovery](docs/recovery.md) if resume cannot finish.
 
 ![Mainnet migration screenshot replay](docs/mainnet-migration.gif)
 
-From the September 11, 2026 mainnet migration using v1.9.4. This is a sequence
-of screenshot excerpts, not a real-time recording; playback timing is illustrative.
-The server IP is partially redacted. The still images below are adapted to
-show the updated RPC warning placement; the GIF retains the original flow.
+The still images reflect the updated flow; the GIF shows the earlier run.
 
 <details>
 <summary>View the updated terminal walkthrough</summary>
