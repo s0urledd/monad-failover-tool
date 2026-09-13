@@ -48,7 +48,7 @@ Run as root on the target full node:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.5/monad-failover.sh &&
-echo "2ecd3d01dc5e746adc8b9370b7595961dff5441b64c55434ac88bbf05c51e829  monad-failover.sh" | sha256sum -c - &&
+echo "3d478c3be39468608bb5a9b5b0e989c5cb512a3daaec365902a67d39ac3c05b3  monad-failover.sh" | sha256sum -c - &&
 install -m 755 monad-failover.sh /usr/local/bin/monad-failover
 ```
 
@@ -91,10 +91,11 @@ server. See [recovery](docs/recovery.md) if resume cannot finish.
 
 From the September 11, 2026 mainnet migration using v1.9.4. This is a sequence
 of screenshot excerpts, not a real-time recording; playback timing is illustrative.
-The server IP is partially redacted.
+The server IP is partially redacted. The still images below are adapted to
+show the updated RPC warning placement; the GIF retains the original flow.
 
 <details>
-<summary>View all four full-size screenshots</summary>
+<summary>View the updated terminal walkthrough</summary>
 
 ![Preflight and validator key import](docs/mainnet-run-1.png)
 
@@ -115,7 +116,8 @@ The tool targets standard P2P ports: TCP/UDP `8000` and authenticated UDP `8001`
 Custom P2P ports are not supported.
 
 - Keep the old validator offline after cutover. Never run both with the same keys.
-- Block public access to RPC and metrics ports. Allow trusted sources only.
+- Block public access to RPC and metrics ports (8080, 8081, 9143, etc.).
+  Allow trusted sources only.
 - Configure [VDP metrics](https://docs.monad.xyz/node-ops/validator-delegation-program)
   on the target and check its firewall.
 - Update downstream peers with the new name record. Transfer any custom

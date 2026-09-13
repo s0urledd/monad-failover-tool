@@ -66,11 +66,13 @@ comparison above applies to that version only.
 
 ## Walkthrough images
 
-The README images use the operator's original terminal screenshots, cropped
-and placed in matching frames with part of the IP covered. Terminal text was
-not retyped. The GIF replays those excerpts with illustrative timing; it is
-not a recording of elapsed migration time. The originals' symbol colors are
-preserved.
+The README still images are adapted from the operator's original terminal
+screenshots, with matching frames and part of the IP covered. The first image
+removes the old preflight RPC warning; the last shows the updated closing
+reminder. Added text uses glyphs taken from the terminal captures. These are
+an updated walkthrough, not an exact transcript of the historical run.
+The GIF is unchanged and replays the original excerpts with illustrative
+timing; it is not a recording of elapsed migration time.
 
 ## Signer compatibility
 

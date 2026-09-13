@@ -1616,11 +1616,11 @@ EOF
   [ "$status" -eq 0 ]
   # The operator is told, but after the promotion rather than at step 1, so a
   # migration in progress is never interrupted by a firewall question.
-  [[ "$output" == *"serving RPC on non-loopback interfaces: 8080"* ]]
+  [[ "$output" != *"serving RPC on non-loopback interfaces"* ]]
   [[ "$output" != *"RPC EXPOSURE CHECK"* ]]
   local tail="${output##*VALIDATOR PROMOTION COMPLETE}"
-  [[ "$tail" == *"serving RPC on non-loopback interfaces"* ]]
-  [[ "$tail" == *"Block public access to RPC and metrics ports."* ]]
+  [[ "$tail" != *"serving RPC on non-loopback interfaces"* ]]
+  [[ "$tail" == *"Block public access to RPC and metrics ports (8080, 8081, 9143, etc.)."* ]]
   [[ "$tail" == *"Allow trusted sources only."* ]]
 }
 
@@ -1633,7 +1633,7 @@ EOF
   normal_run
   [ "$status" -eq 0 ]
   [[ "$output" != *"serving RPC on non-loopback"* ]]
-  [[ "$output" == *"Block public access to RPC and metrics ports."* ]]
+  [[ "$output" == *"Block public access to RPC and metrics ports (8080, 8081, 9143, etc.)."* ]]
 }
 
 @test "RPC: the dry run still reports exposure up front" {
