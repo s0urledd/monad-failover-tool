@@ -9,10 +9,8 @@ Use it for a planned migration or recovery when the old server is unavailable.
 It runs on the target full node using your validator key backups, with no
 connection to the old server required.
 
-
-I used v1.9.4 to migrate Huginn on mainnet on September 11, 2026, with no
-missed blocks observed. This is an observation from that migration, not a zero-downtime guarantee.
-The [validation record](docs/validation.md) covers that run and separate VM reboot tests.
+Used in a successful Huginn mainnet migration, with no missed blocks observed.
+See the [validation record](docs/validation.md).
 
 ## How it works
 
@@ -110,12 +108,15 @@ The server IP is partially redacted.
 
 ## Compatibility and operator notes
 
+Compatible with current Monad mainnet and testnet releases. Maintained to track
+Monad updates.
+
 The tool targets standard P2P ports: TCP/UDP `8000` and authenticated UDP `8001`.
-Custom P2P ports are not supported. RPC listeners are a separate check and
-never block the run. Signer output was checked on Monad **v0.16.1** with a
-throwaway key; see [compatibility details](docs/validation.md#signer-compatibility).
+Custom P2P ports are not supported.
 
 - Keep the old validator offline after cutover. Never run both with the same keys.
+- Keep RPC, metrics and other internal services off the public Internet;
+  allow trusted sources only.
 - Configure [VDP metrics](https://docs.monad.xyz/node-ops/validator-delegation-program)
   on the target and check its firewall.
 - Update downstream peers with the new name record. Transfer any custom
