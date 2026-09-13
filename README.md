@@ -14,26 +14,27 @@ See the [validation record](docs/validation.md).
 
 ## How it works
 
-The full node keeps running while the tool backs up its identity and prepares
-the validator keys and signed config in protected staging. You confirm the
-public keys, beneficiary and sequence number.
-
-Stop the old validator yourself, or confirm it is fully offline, then type
-`STOPPED`. Only then does cutover mask and stop the target services, verify and
-place the prepared files, and start the validator. The tool checks service
-health and sync before exporting fresh key backups. Pending sync is reported
-explicitly. RPC exposure is reported at the end, beside the VDP reminder.
+1. With your synced full node and validator backups ready, the tool backs up
+   the target's identity and imports the validator keys into protected staging.
+   You confirm the public keys, beneficiary and sequence number, then the tool
+   signs the name record and checks the staged config. The full node keeps running.
+2. Review the promotion summary. Stop the old validator yourself, or ensure it
+   is fully offline, and type `STOPPED`. Cutover begins only after you answer
+   yes to the final **proceed with cutover?** prompt.
+3. The tool rechecks the prepared files, masks and stops the target services,
+   places the validator keys and config, verifies the placed files, and starts
+   the services. It then checks service health and sync and exports fresh key
+   backups. Pending sync is reported explicitly.
 
 ## What you need
 
-- A synced full node with the standard Monad setup. Its
-  `/home/monad/.env` must contain its own `KEYSTORE_PASSWORD`; imported keys
-  are encrypted with that password.
+- A synced full node with the standard Monad setup and `KEYSTORE_PASSWORD`
+  set in `/home/monad/.env`.
 - Your validator's `secp-backup` and `bls-backup`: the text backups containing
   the secret IKM, not the encrypted `id-secp` / `id-bls` keystores.
-  Copy them into a root-only directory on the target, for example `/root/validator-keys`
-  (directory mode `700`, files `600`). Keep off-server copies; these are
-  unencrypted secrets. Hidden manual IKM entry is also available.
+  Place them in `/root/validator-keys` or another private directory on the target
+  (directory `700`, files `600`). These are unencrypted secrets; keep off-server
+  copies. Hidden manual IKM entry is also available.
 - The validator's SECP and BLS public keys to compare at the confirmation prompt.
 - Its beneficiary address and `node_name`, from your saved validator config.
   A blank beneficiary keeps the target's existing address only after confirmation.
