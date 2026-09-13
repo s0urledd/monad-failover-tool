@@ -392,6 +392,9 @@ rpc_exposed_ports() {
 # to go and do. By this point the machine is a validator, which is when an
 # exposed RPC port actually matters; before the swap it is still a full node.
 rpc_closing_note() {
+  echo
+  warn "Block public access to RPC and metrics ports."
+  echo "  Allow trusted sources only."
   local out
   if ! out="$(rpc_exposed_ports)"; then
     echo
@@ -403,9 +406,7 @@ rpc_closing_note() {
   [[ -n "$out" ]] || return 0
   echo
   warn "This validator is serving RPC on non-loopback interfaces: ${out//$'\n'/ }"
-  echo "  A validator should not expose RPC publicly. If a firewall already"
-  echo "  blocks these ports from outside, you are fine as is. Otherwise bind"
-  echo "  them to localhost or block them now."
+  echo "  Check that your firewall blocks public access."
 }
 
 # The dry run asks this before anything has changed, while the box is still a

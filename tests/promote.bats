@@ -1620,6 +1620,8 @@ EOF
   [[ "$output" != *"RPC EXPOSURE CHECK"* ]]
   local tail="${output##*VALIDATOR PROMOTION COMPLETE}"
   [[ "$tail" == *"serving RPC on non-loopback interfaces"* ]]
+  [[ "$tail" == *"Block public access to RPC and metrics ports."* ]]
+  [[ "$tail" == *"Allow trusted sources only."* ]]
 }
 
 @test "RPC: a clean validator gets no exposure note after promotion" {
@@ -1631,6 +1633,7 @@ EOF
   normal_run
   [ "$status" -eq 0 ]
   [[ "$output" != *"serving RPC on non-loopback"* ]]
+  [[ "$output" == *"Block public access to RPC and metrics ports."* ]]
 }
 
 @test "RPC: the dry run still reports exposure up front" {

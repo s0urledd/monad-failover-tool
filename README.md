@@ -48,7 +48,7 @@ Run as root on the target full node:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.5/monad-failover.sh &&
-echo "05e56ca36529e6ae022c31417375cf9c39cb1aab0da29f3944d51245773dfea5  monad-failover.sh" | sha256sum -c - &&
+echo "2ecd3d01dc5e746adc8b9370b7595961dff5441b64c55434ac88bbf05c51e829  monad-failover.sh" | sha256sum -c - &&
 install -m 755 monad-failover.sh /usr/local/bin/monad-failover
 ```
 
@@ -115,8 +115,7 @@ The tool targets standard P2P ports: TCP/UDP `8000` and authenticated UDP `8001`
 Custom P2P ports are not supported.
 
 - Keep the old validator offline after cutover. Never run both with the same keys.
-- Keep RPC, metrics and other internal services off the public Internet;
-  allow trusted sources only.
+- Block public access to RPC and metrics ports. Allow trusted sources only.
 - Configure [VDP metrics](https://docs.monad.xyz/node-ops/validator-delegation-program)
   on the target and check its firewall.
 - Update downstream peers with the new name record. Transfer any custom
