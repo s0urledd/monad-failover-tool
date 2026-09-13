@@ -1,6 +1,6 @@
 # Validation record
 
-## Mainnet migration — September 11, 2026
+## Mainnet migration, September 11, 2026
 
 The operator migrated the Huginn validator to a synced full node on Monad
 mainnet using **monad-failover v1.9.4**. This is the tool version; the supplied
@@ -58,6 +58,19 @@ in v1.9.4. The functions that did change are `check_rpc`, `set_toml_value`,
 That keeps the mechanism these runs exercised unchanged. It is not a claim that
 v1.9.4 was itself reboot-tested, and identical functions on their own do not
 prove the surrounding call path is identical.
+
+The v1.9.5 changes are covered by mocked regression tests, not another VM
+reboot or mainnet migration. They change service selection/verification for
+pre-existing masks and handling of optional uptime data. The v1.9.4 function
+comparison above applies to that version only.
+
+## Walkthrough images
+
+The README images use the operator's original terminal screenshots, cropped
+and placed in matching frames with part of the IP covered. Terminal text was
+not retyped. The GIF replays those excerpts with illustrative timing; it is
+not a recording of elapsed migration time. The originals' symbol colors are
+preserved.
 
 ## Signer compatibility
 

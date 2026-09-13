@@ -2,6 +2,15 @@
 
 ## 1.9.5 — 2026-09-13
 
+- Continue through missing or null uptime API fields so successful cutover
+  still exports key backups and reaches the completion message.
+- Respect a pre-masked RPC unit during final verification. Required consensus
+  and execution services must still be active; empty service lists are not
+  passed to systemctl.
+- Explain the public-IP override on detection failure, document unencrypted
+  IKM backups, and add a manual full-node recovery guide.
+- Clarify backup preparation and shorten the README without removing the
+  mainnet walkthrough or changing the three-command installation flow.
 - Raise RPC exposure after the promotion rather than in the live run's
   preflight. The warning blocks nothing, and at step 1 it asked an operator
   mid-migration to stop and think about firewalls. It now sits with the other

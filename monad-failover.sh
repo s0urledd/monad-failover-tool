@@ -706,7 +706,7 @@ refresh_key_backups() {
   if export_key_backup "$SECP_KEY" secp "$se" && export_key_backup "$BLS_KEY" bls "$bl"; then
     ok "Key backups exported: $BACKUP_ROOT/{secp-backup,bls-backup}"
     warn "Store copies of both files OUTSIDE this server (password manager / vault)."
-    echo "  They are the only way to recover this validator's identity."
+    echo "  These files contain unencrypted secret keys. Anyone holding them can use this identity."
   else
     warn "Could not re-export key backups."
     echo "  Previous copies are preserved as *.${ts}.bak in $BACKUP_ROOT."
@@ -716,20 +716,31 @@ refresh_key_backups() {
 
 # Hard health gate after cutover: `systemctl start` returning success does
 # not mean the services survived their first seconds. Wait, then require
-# every unit to be active before the run may call itself complete.
+# consensus and execution to be active. RPC may be deliberately masked by the
+# operator; preserve that choice without treating a stopped validator as healthy.
 # (MF_HEALTH_WAIT exists solely so the test suite can skip the wait.)
 post_verify() {
   step "POST-CUTOVER VERIFICATION"
   sleep "${MF_HEALTH_WAIT:-5}"
-  local svc
+  local svc pre; pre="$(load_state "premasked_units")"
   for svc in "${MONAD_SERVICES[@]}"; do
+    if [[ "$svc" == "monad-rpc" && " $pre " == *" monad-rpc "* ]]; then
+      echo "  monad-rpc was masked before this run; left unchanged."
+      continue
+    fi
+    if [[ " $pre " == *" $svc "* ]] && ! systemctl is-active --quiet "$svc" 2>/dev/null; then
+      die "$svc was already masked, but is required for validation." \
+        "It has not been unmasked automatically. After checking why it was masked:" \
+        "  systemctl unmask $svc && systemctl start $svc" \
+        "Then finish: $0 --resume"
+    fi
     systemctl is-active --quiet "$svc" 2>/dev/null || die \
       "$svc is not active after cutover." \
       "Check:  journalctl -xeu $svc" \
-      "Start:  systemctl start ${MONAD_SERVICES[*]}" \
+      "Start:  systemctl start $svc" \
       "Finish: $0 --resume"
   done
-  ok "All services active"
+  ok "All required services active"
 
   # Active units and a synced, participating node are two different results.
   # Give sync a bounded window instead of judging it five seconds in, and if it
@@ -934,21 +945,28 @@ check_validator_api() {
   fi
 
   local name status uptime fin to last_round
-  name="$(json_str "$resp" validator_name)"
-  status="$(json_str "$resp" status)"
-  uptime="$(json_num "$resp" uptime_percent)"
-  fin="$(json_num "$resp" finalized_count)"
-  to="$(json_num "$resp" timeout_count)"
-  last_round="$(json_num "$resp" last_round)"
+  name="$(json_str "$resp" validator_name || true)"
+  status="$(json_str "$resp" status || true)"
+  uptime="$(json_num "$resp" uptime_percent || true)"
+  fin="$(json_num "$resp" finalized_count || true)"
+  to="$(json_num "$resp" timeout_count || true)"
+  last_round="$(json_num "$resp" last_round || true)"
 
-  ok "${name:-validator} is ${BOLD}${status:-unknown}${RESET} on $NETWORK"
+  if [[ "$status" == "active" ]]; then
+    ok "${name:-validator} is ${BOLD}${status}${RESET} on $NETWORK (uptime API)"
+  else
+    warn "${name:-validator} is ${status:-unknown} on $NETWORK (uptime API)."
+    echo "  Check later: $url"
+  fi
   echo "  Uptime (24h): ${uptime:-?}% (${fin:-?} finalized, ${to:-?} timeout)"
-  [[ -n "$last_round" ]] && echo "  Last round:   $last_round"
+  if [[ -n "$last_round" ]]; then echo "  Last round:   $last_round"; fi
+  return 0
 }
 
 detect_ip() {
   IP="$(public_ip)"
-  [[ -n "$IP" ]] || die "Could not detect a valid public IPv4 address."
+  [[ -n "$IP" ]] || die "Could not detect a valid public IPv4 address." \
+    "Retry with: $0 --resume --public-ip <this-server-public-IPv4>"
   ok "Public IP: $IP"
 }
 
@@ -1118,7 +1136,8 @@ startable_services() {
     case " $pre " in *" $svc "*) continue ;; esac
     out+=("$svc")
   done
-  printf '%s\n' "${out[@]}"
+  if [[ ${#out[@]} -gt 0 ]]; then printf '%s\n' "${out[@]}"; fi
+  return 0
 }
 
 stop_monad_services() {
@@ -1268,7 +1287,7 @@ promote() {
     check_sync
   fi
 
-  # ── 1. Sync + RPC ──
+  # ── 1. Sync ──
   if ! $RESUME || ! completed_step 1; then
     phase 1 "PREFLIGHT"
     check_sync

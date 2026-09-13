@@ -59,6 +59,73 @@ make_healthy_env() {
   } > "$BACKUP_ROOT/bls-backup"
 }
 
+@test "uptime: null last round does not interrupt completion or backup export" {
+  make_healthy_env
+  export MOCK_API_RESPONSE="$BATS_TEST_TMPDIR/uptime.json"
+  printf '%s\n' '{"success":true,"uptime":{"validator_name":"MockVal","status":"inactive","uptime_percent":0,"finalized_count":0,"timeout_count":0,"last_round":null}}' > "$MOCK_API_RESPONSE"
+  normal_run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"MockVal is inactive"* ]]
+  [[ "$output" != *"Last round:"* ]]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  grep -q "Keystore secret: $SECP_IKM" "$BACKUP_ROOT/secp-backup"
+  grep -q "Keystore secret: $BLS_IKM" "$BACKUP_ROOT/bls-backup"
+  [ ! -f "$MF_STATE_DIR/state" ]
+}
+
+@test "uptime: missing optional fields do not interrupt backup export" {
+  make_healthy_env
+  export MOCK_API_RESPONSE="$BATS_TEST_TMPDIR/uptime.json"
+  printf '%s\n' '{"success":true,"uptime":{}}' > "$MOCK_API_RESPONSE"
+  normal_run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"validator is unknown"* ]]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  grep -q "Keystore secret: $SECP_IKM" "$BACKUP_ROOT/secp-backup"
+}
+
+@test "mask: all premasked units never cause an empty service start or false completion" {
+  make_healthy_env
+  export MOCK_PREMASKED="monad-bft monad-execution monad-rpc"
+  normal_run
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Every monad unit was already masked"* ]]
+  [[ "$output" == *"monad-bft was already masked, but is required"* ]]
+  [[ "$output" != *"VALIDATOR PROMOTION COMPLETE"* ]]
+  ! grep -q 'systemctl start' "$MOCK_LOG"
+  grep -q '^last_step=7' "$MF_STATE_DIR/state"
+  # The operator resolves the intentional masks; resume verifies and exports.
+  unset MOCK_PREMASKED
+  systemctl unmask monad-bft monad-execution
+  systemctl start monad-bft monad-execution
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  [ "$(systemctl is-enabled monad-rpc)" = masked ]
+  grep -q "Keystore secret: $SECP_IKM" "$BACKUP_ROOT/secp-backup"
+}
+
+@test "IP detection failure gives a usable override and resume finishes" {
+  make_healthy_env
+  export MOCK_IP_FAIL=1
+  run bash "$SCRIPT" --backup-dir "$BACKUP_ROOT" <<EOF
+y
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--resume --public-ip"* ]]
+  ! grep -q 'systemctl stop' "$MOCK_LOG"
+  run bash "$SCRIPT" --resume --public-ip 203.0.113.7 <<EOF
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+}
+
 @test "--version prints the version" {
   run bash "$SCRIPT" --version
   [ "$status" -eq 0 ]
@@ -1018,9 +1085,12 @@ validator-one
 STOPPED
 y
 EOF
-  grep -q "premasked_units=monad-rpc" "$MF_STATE_DIR/state" \
-    || grep -q "systemctl unmask monad-bft" "$MOCK_LOG"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  [[ "$output" == *"monad-rpc was masked before this run"* ]]
+  grep -q "Keystore secret: $SECP_IKM" "$BACKUP_ROOT/secp-backup"
   ! grep -q "systemctl unmask monad-rpc" "$MOCK_LOG"
+  ! grep -E 'systemctl start .*monad-rpc' "$MOCK_LOG"
 }
 
 # ── Foundation snapshot: sequence suggestion ───────────────
