@@ -107,8 +107,7 @@ The still images reflect the updated flow; the GIF shows the earlier run.
 
 ## Compatibility and operator notes
 
-Compatible with current Monad mainnet and testnet releases. Maintained to track
-Monad updates.
+Used successfully on Monad mainnet with v0.16.2. Maintained to track Monad updates.
 
 The tool targets standard P2P ports: TCP/UDP `8000` and authenticated UDP `8001`.
 Custom P2P ports are not supported.

@@ -3,8 +3,8 @@
 ## Mainnet migration, September 11, 2026
 
 The operator migrated the Huginn validator to a synced full node on Monad
-mainnet using **monad-failover v1.9.4**. This is the tool version; the supplied
-migration transcript does not identify the installed Monad binary version.
+mainnet using **monad-failover v1.9.4** with **Monad v0.16.2**. The operator
+confirmed the Monad version separately; it is not shown in the supplied transcript.
 
 The supplied run transcript records:
 
@@ -86,5 +86,9 @@ signature come from the signer.
 
 The captured format is stored in [the regression fixture](../tests/fixtures/signer-v0.16.1.out).
 Fixture tests validate parsing and config handling; they do not rerun the real
-binary or cryptographically validate a signature. Other Monad versions require
-their own compatibility check.
+binary or cryptographically validate a signature.
+
+Monad v0.16.2 was also used in the successful mainnet migration recorded above,
+including name-record signing and cutover. This is separate from the v0.16.1
+throwaway-key probe. Versions beyond these two require their own compatibility
+check; no separate end-to-end testnet migration is recorded here.
