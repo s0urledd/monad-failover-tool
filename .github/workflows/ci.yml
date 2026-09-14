@@ -58,3 +58,34 @@ jobs:
       # branch of the state-directory guard is actually exercised in CI.
       - name: Root-only state-ownership checks
         run: sudo bats tests/promote.bats --filter 'root only'
+
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          out="$(gofmt -l cmd internal)"
+          if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Static build (amd64)
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o monad-failover ./cmd/monad-failover
+
+      - name: Flags smoke test
+        run: |
+          ./monad-failover --version
+          ./monad-failover --help
+          ./monad-failover --dry-run && exit 1 || test $? -eq 1
+
+      # The flow tests drive the real migration in-process against the same
+      # mock Monad binaries the shell suite uses (tests/mocks on PATH).
+      - name: go test
+        run: go test ./...
