@@ -49,11 +49,19 @@ jobs:
           if [ ! -s notes.md ]; then echo "See CHANGELOG.md." > notes.md; fi
           cat notes.md
 
+      # Works for a tag pushed with git and for a release drafted in the
+      # GitHub UI (which creates the tag first): the release is created if
+      # missing, otherwise its assets are replaced.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           pre=""
           case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" monad-failover checksums.txt \
-            --title "$GITHUB_REF_NAME" --notes-file notes.md $pre
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" monad-failover checksums.txt --clobber
+            gh release edit "$GITHUB_REF_NAME" --notes-file notes.md $pre
+          else
+            gh release create "$GITHUB_REF_NAME" monad-failover checksums.txt \
+              --title "$GITHUB_REF_NAME" --notes-file notes.md $pre
+          fi

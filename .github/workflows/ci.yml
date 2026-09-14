@@ -50,12 +50,6 @@ jobs:
           grep -q "releases/download/v${ver}/monad-failover" README.md
           grep -q "git checkout v${ver}" README.md
 
-      - name: README Go badge matches go.mod
-        run: |
-          want="$(grep -m1 '^go ' go.mod | awk '{print $2}')"
-          echo "go.mod: $want"
-          grep -q "img.shields.io/badge/go-${want}-" README.md
-
       - name: Flags smoke test
         run: |
           ./monad-failover --version

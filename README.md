@@ -1,7 +1,7 @@
 # monad-failover
 
 [![ci](https://github.com/s0urledd/monad-failover-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/s0urledd/monad-failover-tool/actions/workflows/ci.yml)
-[![go](https://img.shields.io/badge/go-1.24.7-00ADD8?logo=go&logoColor=white)](go.mod)
+[![go](https://img.shields.io/badge/Go-00ADD8?logo=go&logoColor=white)](go.mod)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Promotes a synced Monad full node to a validator, following the official
