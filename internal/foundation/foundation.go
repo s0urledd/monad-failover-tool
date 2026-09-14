@@ -19,7 +19,7 @@ import (
 // SeqSaneMax is the largest sequence that survives a JSON double intact.
 const SeqSaneMax = 9007199254740991
 
-const maxBody = 33554432 // 32 MiB, as the shell release capped it
+const maxBody = 33554432 // 32 MiB cap on the snapshot body
 
 // Result is a usable sequence from the snapshot.
 type Result struct {

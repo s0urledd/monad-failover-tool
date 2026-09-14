@@ -1,9 +1,7 @@
 // Package ui is the terminal surface of monad-failover: coloured output,
 // phase banners, prompts and the fatal-error type every other package returns.
 //
-// Wording is kept identical to the 1.9.x shell release where an operator or a
-// document depends on it, so recovery instructions and the test suite keep
-// their meaning across the two implementations.
+// Wording is stable: the recovery document and the test suite depend on it.
 package ui
 
 import (
@@ -18,8 +16,7 @@ import (
 	"unsafe"
 )
 
-// ANSI sequences. They are always emitted, as the shell release did; the run
-// log therefore carries them too, which is how it has always been.
+// ANSI sequences. They are always emitted; the run log carries them too.
 const (
 	Bold   = "\033[1m"
 	Dim    = "\033[2m"
@@ -114,8 +111,8 @@ func (c *Console) Warn(text string) { fmt.Fprintf(c.Out, "%s⚠%s %s\n", Yellow,
 // Cross prints a red ✗ line on stdout; the dry run uses it for failed checks.
 func (c *Console) Cross(text string) { fmt.Fprintf(c.Out, "%s✗%s %s\n", Red, Reset, text) }
 
-// Report prints a Fatal (or any error) in the shell release's format on the
-// error stream: "✗ headline" followed by indented instruction lines.
+// Report prints a Fatal (or any error) on the error stream: "✗ headline"
+// followed by indented instruction lines.
 func (c *Console) Report(err error) {
 	var f *Fatal
 	if !errors.As(err, &f) {
@@ -149,7 +146,7 @@ func (c *Console) readLine() (string, error) {
 }
 
 // ConfirmYN prints "  ? prompt (y/N) › " and returns true for y/yes.
-// End of input counts as "no", as it did in the shell release.
+// End of input counts as "no".
 func (c *Console) ConfirmYN(prompt string) bool {
 	fmt.Fprintf(c.Out, "  %s?%s %s (y/N) › ", Cyan, Reset, prompt)
 	ans, err := c.readLine()

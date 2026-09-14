@@ -18,9 +18,9 @@ import (
 	"github.com/s0urledd/monad-failover-tool/internal/ui"
 )
 
-// The flow tests drive the real migration in-process against the shell
-// suite's mock Monad binaries (tests/mocks on PATH) and one local HTTP
-// server standing in for every endpoint. No network, no systemd, no real
+// The flow tests drive the real migration in-process against the mock Monad
+// binaries in tests/mocks (on PATH) and one local HTTP server standing in for
+// every endpoint. No network, no systemd, no real
 // keys: everything happens in a temporary directory.
 
 const (
@@ -116,7 +116,7 @@ func (h *harness) mock(name string, args ...string) {
 	}
 }
 
-// run executes a live run with the given stdin script and returns the exit
+// run executes a live run answering prompts from stdin and returns the exit
 // code and the ANSI-stripped combined output.
 func (h *harness) run(stdin string, opt Options) (int, string) {
 	h.t.Helper()
@@ -240,7 +240,7 @@ func (h *harness) assertServicesUntouched() {
 	}
 }
 
-// ── the reviewer's four properties, then everything the shell suite covers ──
+// ── safety properties first, then the rest of the flow ──
 
 func TestFullPromotionEndToEnd(t *testing.T) {
 	h := newHarness(t)
@@ -1120,9 +1120,8 @@ func TestKeyMismatchDeclinedAborts(t *testing.T) {
 	}
 }
 
-// State written by the 1.9.x shell release has the same layout; a run it
-// left at step 3 is picked up from step 4.
-func TestStateFromShellReleaseResumes(t *testing.T) {
+// A state file left at step 3 by an earlier run is picked up from step 4.
+func TestStateLeftAtStep3ResumesFromStep4(t *testing.T) {
 	h := newHarness(t)
 	h.healthyEnv()
 	if err := h.d.Secure(os.Geteuid(), h.p.BackupRoot); err != nil {

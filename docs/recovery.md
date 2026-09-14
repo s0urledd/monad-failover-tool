@@ -120,5 +120,5 @@ To return the validator role to another server, follow a new migration with a
 higher sequence. Stop the current validator before confirming that cutover. See
 [Monad's restoration procedure](https://docs.monad.xyz/node-ops/node-recovery/node-migration#restoring-the-original-validator).
 
-This manual restore guide has been reviewed against the backup/state layout;
-it is not part of the recorded VM reboot tests.
+This manual restore guide is reviewed against the backup and state layout; it
+is not covered by the automated tests.

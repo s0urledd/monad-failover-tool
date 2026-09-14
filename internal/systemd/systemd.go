@@ -47,7 +47,8 @@ func Stop(stdout io.Writer, units ...string) {
 	_ = run(stdout, io.Discard, append([]string{"stop"}, units...)...)
 }
 
-// Enable enables the units; failure is ignored, as the shell release did.
+// Enable enables the units. Failure is ignored: enabling is best effort,
+// starting is what gets checked.
 func Enable(units ...string) {
 	_ = run(io.Discard, io.Discard, append([]string{"enable"}, units...)...)
 }

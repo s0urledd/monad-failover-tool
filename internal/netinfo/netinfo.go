@@ -16,7 +16,7 @@ import (
 var ipv4Re = regexp.MustCompile(`^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$`)
 
 // ValidIPv4 reports whether s is a dotted-quad IPv4 address with every octet
-// in range. Leading zeros are read as decimal, as the shell release did.
+// in range. Leading zeros are read as decimal.
 func ValidIPv4(s string) bool {
 	m := ipv4Re.FindStringSubmatch(s)
 	if m == nil {
@@ -45,8 +45,8 @@ func ValidPort(s string) bool {
 // DefaultIPURL is the service asked for the public IPv4 address.
 const DefaultIPURL = "https://ifconfig.me"
 
-// Client is an HTTP client restricted to IPv4 with the shell release's
-// timeouts: 10 s to connect, 20 s in total.
+// Client is an HTTP client restricted to IPv4: 10 s to connect, total as
+// given.
 func Client(total time.Duration) *http.Client {
 	d := &net.Dialer{Timeout: 10 * time.Second}
 	return &http.Client{

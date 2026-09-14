@@ -9,10 +9,8 @@ Use it for a planned migration or recovery when the old server is unavailable.
 It runs on the target full node using your validator key backups, with no
 connection to the old server required.
 
-2.0.0-rc.1 is a Go implementation of the procedure and is being validated on
-testnet. For a mainnet migration today use the
-[1.9.5 shell release](#stable-release-195), which was used successfully on
-Monad mainnet with v0.16.2. See the [validation record](docs/validation.md).
+2.0.0-rc.1 is a release candidate under validation on testnet. Do not use it
+on a mainnet validator before 2.0.0.
 
 ## How it works
 
@@ -51,7 +49,7 @@ Run as root on the target full node (linux/amd64):
 
 ```bash
 curl -fsSLO https://github.com/s0urledd/monad-failover-tool/releases/download/v2.0.0-rc.1/monad-failover &&
-echo "83c29deca08ef0c21cc9c1d933c62c48258107fd5e100a22408b6f65327a668c  monad-failover" | sha256sum -c - &&
+echo "1c011100f615158e4f179d4729aa2fd571c4ec42fc87b9e5ee6c17812ca2fcda  monad-failover" | sha256sum -c - &&
 install -m 755 monad-failover /usr/local/bin/monad-failover
 ```
 
@@ -90,40 +88,10 @@ The saved `/opt/monad/backup/failover-<timestamp>/` restores this server's
 original full-node identity. It does not move the validator back to the old
 server. See [recovery](docs/recovery.md) if resume cannot finish.
 
-A run interrupted under the 1.9.5 shell release can be finished with
-`--resume` here: the state file has the same layout and location.
-
-## Migration walkthrough
-
-![Mainnet migration walkthrough](docs/mainnet-migration.gif)
-
-The walkthrough follows the migration from preparation through confirmation
-and completion. It was captured with the 1.9 shell release; apart from the
-version in the banner, the terminal output is the same.
-
-<details>
-<summary>View the terminal walkthrough</summary>
-
-![Preflight and validator key import](docs/mainnet-run-1.png)
-
-![Beneficiary, sequence and name record signing](docs/mainnet-run-2.png)
-
-![Cutover and service verification](docs/mainnet-run-3.png)
-
-![Completion and fresh backups](docs/mainnet-run-4.png)
-
-</details>
-
 ## Compatibility and operator notes
 
-The 1.9.5 shell release was used successfully on Monad mainnet with v0.16.2.
-2.0 performs the same procedure with the same prompts, state and safeguards;
-its own live-network runs are recorded in the
-[validation record](docs/validation.md) as they happen. Maintained to track
-Monad updates.
-
-The tool targets standard P2P ports: TCP/UDP `8000` and authenticated UDP `8001`.
-Custom P2P ports are not supported.
+Maintained to track Monad updates. The tool targets standard P2P ports:
+TCP/UDP `8000` and authenticated UDP `8001`. Custom P2P ports are not supported.
 
 - Block public access to RPC and metrics ports (8080, 8081, 9143, etc.).
   Allow trusted sources only.
@@ -155,19 +123,5 @@ any change where the README checksum and the build drift apart.
 
 After verification, `sudo rm -- /usr/local/bin/monad-failover` removes the tool.
 Monad, backups and logs stay in place. Keep the backups for recovery.
-
-## Stable release (1.9.5)
-
-The shell release stays available at its tag and is the version to use on
-mainnet until 2.0.0 is validated. Its install command is unchanged:
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/s0urledd/monad-failover-tool/v1.9.5/monad-failover.sh &&
-echo "1716029216ad46832b010bdff67f0d218e26393b22d3fb7e92de8195563bc7ba  monad-failover.sh" | sha256sum -c - &&
-install -m 755 monad-failover.sh /usr/local/bin/monad-failover
-```
-
-It receives no new features. Its source and documentation are at
-[v1.9.5](https://github.com/s0urledd/monad-failover-tool/tree/v1.9.5).
 
 [MIT licensed](LICENSE).

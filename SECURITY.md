@@ -60,8 +60,7 @@ the import. The copy that Go makes to pass it to `monad-keystore` as an argument
 is a string the garbage collector owns, and it cannot be zeroed on request. The
 same holds for the keystore password. Nothing here is written to disk or swap
 by the tool, but a memory dump of the process while a key command runs could
-contain those values. This is weaker than the shell release, which could clear
-its variables, and it is stated here rather than papered over.
+contain those values. It is stated here rather than papered over.
 
 ## Resume state is a root trust boundary
 

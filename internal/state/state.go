@@ -7,8 +7,7 @@
 // before use, and nothing an unprivileged user could have staged (a symlink,
 // a loose directory, a foreign owner) is accepted.
 //
-// The on-disk format is the shell release's "key=value" file, so a run
-// interrupted under 1.9.x can be finished by this implementation.
+// The on-disk format is a plain key=value file.
 package state
 
 import (
@@ -57,7 +56,7 @@ func Resolve(sandbox bool, override string) Dir {
 	return d
 }
 
-// LegacyDir is where releases before 1.9 kept state. It is under MONAD_HOME,
+// LegacyDir is a state location older releases used. It is under MONAD_HOME,
 // which the monad service account can write, so it is refused, never read.
 func LegacyDir(monadHome string) string { return filepath.Join(monadHome, ".monad-failover") }
 

@@ -6,10 +6,6 @@ that units masked beforehand stay masked. Mocks cannot prove what a real kernel
 and a real systemd do across a reboot. This is the procedure for that, and it
 needs a throwaway VM. Do not run it on a machine holding real validator keys.
 
-This mechanism was exercised on a disposable Ubuntu VPS on September 10, 2026,
-using real systemd services and mock Monad commands. Both an OS reboot and a
-graceful panel shutdown/power-on passed. See [recorded scope and results](validation.md#vm-reboot-tests).
-
 ## Setup
 
 1. Bring up a disposable Ubuntu VM and install a Monad full node on it, following

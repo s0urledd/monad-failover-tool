@@ -1,6 +1,6 @@
 // Package testutil builds the fixtures the test suite shares: Foundation
-// snapshots and uptime responses shaped like the ones the shell release's
-// mock curl produced, so every guard can be driven from a table.
+// snapshots and uptime responses shaped like the live endpoints', so every
+// guard can be driven from a table.
 package testutil
 
 import (
@@ -20,7 +20,7 @@ const (
 	BlsIKM   = "2222222222222222222222222222222222222222222222222222222222222222"
 )
 
-// SnapshotOpts mirror the knobs of the shell suite's mock curl.
+// SnapshotOpts select which guard a snapshot should trip.
 type SnapshotOpts struct {
 	Network  string // default testnet
 	ChainID  string // default by network

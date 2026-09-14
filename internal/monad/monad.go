@@ -154,7 +154,7 @@ func Status() (status, blockDiff string, ok bool) {
 	return status, blockDiff, status != ""
 }
 
-// Clear clears the terminal the way the shell release did; failure is ignored.
+// Clear clears the terminal before a live run; failure is ignored.
 func Clear(w io.Writer) {
 	cmd := exec.Command("clear")
 	cmd.Stdout = w
