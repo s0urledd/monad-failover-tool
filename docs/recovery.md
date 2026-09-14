@@ -23,8 +23,7 @@ Logs are in `/opt/monad/failover-logs/`. The current run's state is
 This is a manual alternative when resume cannot finish. It replaces the target's
 validator identity with the full-node identity saved before cutover. It does
 **not** return the validator role to the old server, undo a published sequence,
-or guarantee the restored node immediately syncs. Keep the old validator
-offline until you have a separate, verified migration plan.
+or guarantee the restored node immediately syncs.
 
 Use the specific `failover-<timestamp>` directory printed by the interrupted
 run, not the top-level directory containing `secp-backup` and `bls-backup`.
@@ -118,7 +117,7 @@ fails. These are the default installation paths; review any custom paths first.
    `exec 9>&-`. Retain the archived state and backup until recovery is verified.
 
 To return the validator role to another server, follow a new migration with a
-higher sequence and only one active holder of the validator identity. See
+higher sequence. Stop the current validator before confirming that cutover. See
 [Monad's restoration procedure](https://docs.monad.xyz/node-ops/node-recovery/node-migration#restoring-the-original-validator).
 
 This manual restore guide has been reviewed against the backup/state layout;

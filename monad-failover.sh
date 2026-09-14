@@ -1514,7 +1514,7 @@ promote() {
     echo "└────────────────────────────────────────────────────────────"
     echo
 
-    warn "Stop the old validator before confirming cutover, unless it is already offline."
+    warn "Stop the old validator before confirming cutover."
     echo "      ${BOLD}systemctl stop monad-bft monad-execution monad-rpc${RESET}"
     echo
     local confirm_stopped
