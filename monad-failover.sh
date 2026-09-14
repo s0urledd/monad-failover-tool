@@ -1365,8 +1365,8 @@ promote() {
     [[ -n "$BLS_PUB" ]]  || die "Could not recover BLS public key"
 
     echo
-    echo "  SECP: ${BOLD}${SECP_PUB:0:46}...${RESET}"
-    echo "  BLS:  ${BOLD}${BLS_PUB:0:46}...${RESET}"
+    echo "  SECP: ${BOLD}${SECP_PUB}${RESET}"
+    echo "  BLS:  ${BOLD}${BLS_PUB}${RESET}"
     echo
     confirm_yn "do these match your validator keys?" || die "Key mismatch — aborting."
     ok "Keys verified"
