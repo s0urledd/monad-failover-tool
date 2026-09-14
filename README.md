@@ -127,4 +127,5 @@ the optional monval uptime lookup operated by Huginn.
 After verification, `sudo rm -- /usr/local/bin/monad-failover` removes the tool.
 Monad, backups and logs stay in place. Keep the backups for recovery.
 
-MIT licensed.
+[MIT licensed.
+](https://github.com/s0urledd/monad-failover-tool?tab=MIT-1-ov-file)
