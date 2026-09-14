@@ -1,5 +1,31 @@
 # Changelog
 
+## 2.0.0-rc.1 — 2026-09-14
+
+Go implementation of the migration. Same eight phases, prompts, confirmations,
+recovery messages, state file layout and safeguards as the 1.9 shell release;
+a run interrupted under 1.9.5 can be finished with `--resume` here.
+
+- Single static amd64 binary built from the Go standard library only. The
+  build is reproducible; the README carries the release checksum and CI
+  fails when the two drift apart.
+- `net/http`, `encoding/json` and `/proc/net/tcp` replace `curl`, the awk
+  JSON reader and `ss`. Run-time requirements are `systemctl`,
+  `monad-keystore`, `monad-sign-name-record` and, for sync checks,
+  `monad-status`.
+- State writes and placed files are fsynced before the rename. The public IP
+  is detected once per run.
+- Test-only endpoint overrides (`MF_IP_URL`, `MF_UPTIME_API_BASE`) are
+  refused in a root run, like `MF_STATE_DIR`.
+- Test suite of 104 functions, including in-process flow tests that drive the
+  full migration against mock Monad binaries and inject faults between file
+  placements. Runs without root, network or systemd.
+- Secrets in memory are weaker than in the shell release; `SECURITY.md` says
+  how.
+- Release candidate: not yet used on a live network. The 1.9.5 shell release
+  remains the version for mainnet use until 2.0.0 and stays available at its
+  tag; it receives no new features.
+
 ## 1.9.5 — 2026-09-13
 
 - Continue through missing or null uptime API fields so successful cutover

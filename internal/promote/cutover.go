@@ -109,6 +109,7 @@ func (r *Run) cutover() error {
 			}
 			return err
 		}
+		pauseAfterSecp(r)
 		if err := r.placeOne(r.d.BlsNew, r.p.BlsKey, "staged_bls_sha", "BLS key"); err != nil {
 			if errors.Is(err, place.ErrNotPlaced) {
 				return ui.Die("CRITICAL: the SECP key was placed but the BLS key was not.",

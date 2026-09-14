@@ -1,3 +1,3 @@
 module github.com/s0urledd/monad-failover-tool
 
-go 1.24
+go 1.24.7

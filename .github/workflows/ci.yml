@@ -6,59 +6,6 @@ on:
   pull_request:
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Syntax check
-        run: bash -n monad-failover.sh
-
-      - name: ShellCheck (style level)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq shellcheck
-          shellcheck -S style monad-failover.sh tests/mocks/*
-
-      - name: README checksum matches script
-        run: |
-          want="$(grep -oE '\b[0-9a-f]{64}\b' README.md | head -1)"
-          got="$(sha256sum monad-failover.sh | awk '{print $1}')"
-          echo "README: $want"
-          echo "script: $got"
-          test "$want" = "$got"
-
-      - name: README install URL pins the current version
-        run: |
-          ver="$(grep -m1 '^VERSION=' monad-failover.sh | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
-          echo "script version: $ver"
-          grep -q "monad-failover-tool/v${ver}/monad-failover.sh" README.md
-
-      - name: Flags smoke test
-        run: |
-          bash monad-failover.sh --version
-          bash monad-failover.sh --help
-          bash monad-failover.sh --dry-run && exit 1 || test $? -eq 1
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install bats
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bats
-
-      - name: End-to-end tests (mocked Monad binaries)
-        run: bats tests
-
-      # The unprivileged suite skips the root-ownership refusal (it needs EUID 0
-      # and the real /var/lib path); run just those as root so the production
-      # branch of the state-directory guard is actually exercised in CI.
-      - name: Root-only state-ownership checks
-        run: sudo bats tests/promote.bats --filter 'root only'
-
   go:
     runs-on: ubuntu-latest
     steps:
@@ -66,7 +13,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: '1.24.7'
 
       - name: gofmt
         run: |
@@ -74,10 +21,33 @@ jobs:
           if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
 
       - name: go vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          go vet -tags reboottest ./internal/promote
 
-      - name: Static build (amd64)
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o monad-failover ./cmd/monad-failover
+      - name: ShellCheck (test mocks)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck -S style tests/mocks/*
+
+      - name: Reproducible release build (linux/amd64)
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w -buildid=' -o monad-failover ./cmd/monad-failover
+
+      - name: README checksum matches the release build
+        run: |
+          want="$(grep -oE '\b[0-9a-f]{64}\b' README.md | head -1)"
+          got="$(sha256sum monad-failover | awk '{print $1}')"
+          echo "README: $want"
+          echo "build:  $got"
+          test "$want" = "$got"
+
+      - name: README install URL pins the current version
+        run: |
+          ver="$(grep -m1 '^const Version' cmd/monad-failover/main.go | grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?')"
+          echo "version: $ver"
+          grep -q "releases/download/v${ver}/monad-failover" README.md
+          grep -q "git checkout v${ver}" README.md
 
       - name: Flags smoke test
         run: |
@@ -85,7 +55,7 @@ jobs:
           ./monad-failover --help
           ./monad-failover --dry-run && exit 1 || test $? -eq 1
 
-      # The flow tests drive the real migration in-process against the same
-      # mock Monad binaries the shell suite uses (tests/mocks on PATH).
+      # The flow tests drive the real migration in-process against the mock
+      # Monad binaries in tests/mocks; no root, network or systemd needed.
       - name: go test
         run: go test ./...

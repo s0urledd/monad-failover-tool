@@ -1,5 +1,20 @@
 # Validation record
 
+## 2.0 (Go implementation)
+
+No live-network migration is recorded for the Go implementation yet. The
+records below are for the shell release. 2.0 reproduces its procedure, prompts
+and safeguards; its test suite (`go test ./...`, 104 functions) drives the full
+migration in-process against mock Monad binaries, including interrupted
+cutovers, changed files, service and API failures and pre-masked units. That
+is not a substitute for a real run. The first testnet and mainnet migrations
+with 2.0 will be added here when they happen, and the VM reboot test in
+`docs/reboot-test.md` has to be repeated with a `-tags reboottest` build.
+
+The walkthrough images in the README were captured with the 1.9.4 shell
+release. Apart from the version in the banner, the terminal output of 2.0 is
+the same.
+
 ## Mainnet migration, September 11, 2026
 
 The operator migrated the Huginn validator to a synced full node on Monad

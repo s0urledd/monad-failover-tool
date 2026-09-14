@@ -17,7 +17,16 @@ graceful panel shutdown/power-on passed. See [recorded scope and results](valida
    services exist if you only want to test the swap mechanics.
 2. Generate a throwaway keypair to use as the "validator" being migrated. Never
    use a real validator key for this.
-3. Install the tool as in the README.
+3. Build a test binary with the reboot-test hook and install it in place of the
+   release binary for this test only:
+
+   ```bash
+   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags reboottest -o monad-failover ./cmd/monad-failover
+   install -m 755 monad-failover /usr/local/bin/monad-failover
+   ```
+
+   The `reboottest` build tag adds a 30 second pause between the first and
+   second file placement. A release build contains no such code path.
 
 ## The test
 
@@ -28,10 +37,10 @@ graceful panel shutdown/power-on passed. See [recorded scope and results](valida
    systemctl is-enabled monad-bft monad-execution monad-rpc
    ```
 
-3. Type `STOPPED` and confirm the cutover, then immediately interrupt the run
-   part-way through the swap. The window is small, so the reliable way is to add
-   a temporary `sleep 30` between the first and second `place_verified` call in
-   your copy of the script, and kill the run during that sleep.
+3. Type `STOPPED` and confirm the cutover. The test build prints
+   `reboottest build: pausing 30s after the SECP placement`; kill the run
+   during that pause, so the node is left with the new SECP key and the old
+   BLS key and config.
 4. With the run killed mid-swap, confirm the units are masked:
 
    ```bash
@@ -56,7 +65,8 @@ graceful panel shutdown/power-on passed. See [recorded scope and results](valida
    ```
 
 8. Confirm the units are unmasked and active, and that the identity is
-   consistent (both keys and `node.toml` are the new ones).
+   consistent (both keys and `node.toml` are the new ones). Then reinstall the
+   release binary.
 
 ## What a pass looks like
 

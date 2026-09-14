@@ -1,16 +1,18 @@
 # Security
 
-## What this script does, and what it doesn't
+## What this tool does, and what it doesn't
 
-`monad-failover.sh` runs as root on a Monad full node during a validator migration.
-It is a single auditable file with no dependencies beyond the Monad binaries and
-standard system tools. Concretely, it:
+`monad-failover` runs as root on a Monad full node during a validator migration.
+It is a single static binary built from this repository with no third-party
+modules; every import is from the Go standard library. Concretely, it:
 
 - reads `KEYSTORE_PASSWORD` from `/home/monad/.env` (by parsing the one line, not
-  by sourcing the file as code) and reads your `secp-backup` / `bls-backup` files
+  by executing the file) and reads your `secp-backup` / `bls-backup` files
 - writes only under `/home/monad/monad-bft/config`, `/opt/monad/backup` and
-  `/var/lib/monad-failover` (resume state), plus `/opt/monad/failover-logs`
+  `/var/lib/monad-failover` (resume state and staging), plus `/opt/monad/failover-logs`
 - manages only the `monad-bft`, `monad-execution` and `monad-rpc` systemd units
+- runs `monad-keystore`, `monad-sign-name-record`, `monad-status` and
+  `systemctl` with argument vectors, never through a shell
 - makes three kinds of outbound requests, all HTTPS: `ifconfig.me` to detect
   the server's public IPv4 (bypassed with `--public-ip`); Monad Foundation's
   validator snapshot (`bucket.monadinfra.com/validator-data/<network>.json`) to
@@ -21,11 +23,13 @@ standard system tools. Concretely, it:
   the URL. As with any HTTPS request, the endpoint also sees the caller's IP.
   Snapshot and uptime failures do not block migration; failed IP detection
   requires an explicit `--public-ip` before signing can continue
+- reads `/proc/net/tcp` and `/proc/net/tcp6` in the dry run to report RPC
+  ports listening on non-loopback addresses
 
-It contains no telemetry and never transmits your keys or password anywhere. Secret
-files it creates (key backups, resume state) are created with a `077` umask so they
-are never world-readable, and the keystore password is never written alongside the
-encrypted keystores.
+It contains no telemetry and never transmits your keys or password anywhere.
+The process runs with umask `077`, so every file it creates (key backups,
+resume state, staging, logs) is never world-readable, and the keystore
+password is never written alongside the encrypted keystores.
 
 `secp-backup` and `bls-backup` contain **unencrypted secret IKM**, both when you
 provide them and when the tool exports fresh copies after cutover. Anyone with
@@ -40,15 +44,24 @@ keystores and config; it is not a backup of the incoming validator identity.
 The Monad key tools take the password and IKM as command-line flags
 (`monad-keystore --password ... --ikm ...`). While those child processes run, their
 arguments are visible in `/proc/<pid>/cmdline` to any local user. This is a property
-of the Monad CLI, not something this script can avoid. On a validator you should
+of the Monad CLI, not something this tool can avoid. On a validator you should
 already treat local access as full compromise, but if you want defence in depth,
 mount `/proc` with `hidepid=2` so process arguments are not readable across users.
 
-The script itself never echoes or logs the password or IKM: manual IKM entry is
-hidden (`read -s`), IKM shell variables are cleared right after use, and the
-output of every key-tool invocation that carries a secret on its command line is
-suppressed, so even an error path that echoed its arguments could not land in
-the run log.
+The tool itself never echoes or logs the password or IKM: manual IKM entry is
+read with terminal echo off, and the output of every key-tool invocation that
+carries a secret on its command line is discarded or parsed, never written to the
+run log, so even an error path that echoed its arguments could not land there.
+
+## A second caveat: secrets in memory
+
+The IKM typed or read from a backup is held in a buffer this code zeroes after
+the import. The copy that Go makes to pass it to `monad-keystore` as an argument
+is a string the garbage collector owns, and it cannot be zeroed on request. The
+same holds for the keystore password. Nothing here is written to disk or swap
+by the tool, but a memory dump of the process while a key command runs could
+contain those values. This is weaker than the shell release, which could clear
+its variables, and it is stated here rather than papered over.
 
 ## Resume state is a root trust boundary
 
@@ -60,23 +73,28 @@ that file can steer the run, so the file must not be writable by anyone but root
 For that reason the state lives in `/var/lib/monad-failover`, owned `root:root`
 and mode `0700`, with the state file itself `0600`. It is not under
 `/home/monad`, which the unprivileged `monad` service account owns. The install
-instructions place the script itself in root-owned `/usr/local/bin` on the same
-grounds. On startup the script:
+instructions place the binary in root-owned `/usr/local/bin` on the same
+grounds. On startup the tool:
 
 - refuses to run if the state directory is not owned by root, or if the
   directory or the state file is a symlink, or the state file is not a regular
   file (an unprivileged user could otherwise pre-stage a symlink to redirect a
-  root write);
-- writes state atomically through a `mktemp` file inside that directory, never a
-  predictable `.tmp` name;
-- validates every field it reads back against a narrow allowlist before use. In
-  particular the step counter is range-checked to 1-8 before it reaches an
-  arithmetic expansion, because Bash arithmetic evaluates an array subscript and
-  a subscript runs command substitution, so an unchecked value there would
-  execute as root;
+  root write); an existing directory whose mode is not exactly `0700` is
+  refused, never repaired and then trusted;
+- writes state atomically through a uniquely named temporary file created
+  inside that directory (`os.CreateTemp`, `O_EXCL`), fsynced and renamed over
+  the old file, never a predictable name;
+- validates every field it reads back against a narrow shape before use: the
+  step counter is a closed `1`–`8` range, not just digits, because an
+  out-of-range value would satisfy every completed-step check and skip the
+  whole migration to a fake completion; a key that appears twice in the file
+  is refused rather than read as its first line;
 - refuses, rather than silently migrating, any state left by an older version
   under `/home/monad/.monad-failover`: that path is writable by the `monad`
-  account, so it is treated as untrusted and left in place for you to inspect.
+  account, so it is treated as untrusted and left in place for you to inspect;
+- refuses the test-only overrides `MF_STATE_DIR`, `MF_IP_URL` and
+  `MF_UPTIME_API_BASE` in a live (root) run instead of ignoring them, so a
+  stray variable can never be assumed honoured.
 
 Do not remove resume state just to bypass a refusal. If it cannot safely be
 resumed, follow [manual recovery](docs/recovery.md) before starting a fresh run.
@@ -100,20 +118,20 @@ every point it can be interrupted is recoverable:
   within one filesystem and cannot be interrupted half-written. A move from the
   staging filesystem straight to the config filesystem would be a copy, not an
   atomic rename. The temporary file is created and written in a single open
-  with `O_CREAT|O_EXCL`: creating it and then reopening it by name would leave
-  a window in which the name could be replaced with a symlink and the write
-  would follow it, and no checksum afterwards can undo a write to the wrong
-  file. It is created `0600` by the script's umask, so there is no
-  chmod-by-path either. The live file is checked once more after the rename.
+  with `O_CREAT|O_EXCL|O_WRONLY` at mode `0600`: creating it and then reopening
+  it by name would leave a window in which the name could be replaced with a
+  symlink and the write would follow it, and no checksum afterwards can undo a
+  write to the wrong file. The file is fsynced before the rename. The live file
+  is checked once more after the rename.
 - One boundary is not fully closed and is worth stating plainly: the
   destination directory belongs to the `monad` account, so the rename target is
   a path that account can manipulate. The single-open write removes the
   write-through-a-symlink hazard, and the check after the rename means a
-  substitution is detected and the run stops before the services start, but a
-  shell cannot rename by file descriptor, so detection rather than prevention
-  is the guarantee for that last step. Operators who want the hazard gone
-  entirely can make the config directory itself root-owned, with the `monad`
-  account holding read and execute only.
+  substitution is detected and the run stops before the services start, but
+  a rename by file descriptor is not available, so detection rather than
+  prevention is the guarantee for that last step. Operators who want the
+  hazard gone entirely can make the config directory itself root-owned, with
+  the `monad` account holding read and execute only.
 - The units are masked before the swap and unmasked only once every file is in
   place. A plain stop is not enough: the units are normally enabled, so a reboot
   between two renames would otherwise bring the node up with a mixed identity.
@@ -142,17 +160,14 @@ verification.
 ## Reading the Foundation snapshot
 
 The sequence suggestion comes from Monad Foundation's published validator data.
-It is read with a structural pass that tracks string state and brace depth, so
-every field is taken from inside the object it belongs to, and the whole
-document must be balanced before any of it is used. Object boundaries alone are
-not enough: a response truncated after the target object would otherwise still
-parse and yield a sequence. A flat text scan
-would attribute a neighbouring validator's sequence to your key as soon as the
-publisher reorders fields. The entry must match your SECP key exactly and be
-unique, its BLS key must match the key you imported, and the snapshot's network
-and chain id must be the ones this node is on. A validator with no published
-record is reported as unknown, never as sequence zero. Anything that fails these
-checks falls back to entering the number yourself, with the reason shown.
+The document is decoded as a whole with the standard JSON decoder; a truncated
+response, or one with data after the document, is refused before any of it is
+used. The snapshot's network and chain id must be the ones this node is on and
+its timestamp must be recent. The entry must match your SECP key exactly and be
+unique, and its BLS key must match the key you imported. A validator with no
+published record is reported as unknown, never as sequence zero, and a sequence
+outside the range a JSON number carries intact is refused. Anything that fails
+these checks falls back to entering the number yourself, with the reason shown.
 
 ## Services active is not the same as validating
 
@@ -169,10 +184,20 @@ an inactive result are advisory and do not prevent key backup export.
 ## Verifying what you run
 
 - Compare `sha256sum /usr/local/bin/monad-failover` against the checksum in the
-  README. CI fails any change where the README and the repo script drift apart.
+  README. The build is reproducible: with Go 1.24.7 on linux/amd64, the command
+  in the README's "Build from source" section yields the same bytes. CI builds
+  the release the same way and fails any change where the README checksum and
+  the build drift apart, and the release workflow refuses to publish a binary
+  whose checksum differs from the tagged README.
 - Run `monad-failover --dry-run` first. It performs every preflight check
   read-only and changes nothing.
-- The script is short enough to read before running. Please do.
+- The code is about 3,700 lines under `cmd/` and `internal/`. The parts that
+  touch secrets, root-owned state and the live node are `internal/state`
+  (resume record), `internal/place` (checksummed placement), `internal/monad`
+  (the key tools and signer), `internal/netinfo`, `internal/foundation` and
+  `internal/uptime` (the three network requests) and `internal/promote` (the
+  flow). `go vet ./...` and `go test ./...` run without root, network or
+  systemd.
 
 ## Reporting a vulnerability
 
