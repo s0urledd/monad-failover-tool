@@ -21,7 +21,7 @@ graceful panel shutdown/power-on passed. See [recorded scope and results](valida
    release binary for this test only:
 
    ```bash
-   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -tags reboottest -o monad-failover ./cmd/monad-failover
+   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -tags reboottest -o monad-failover ./cmd/monad-failover
    install -m 755 monad-failover /usr/local/bin/monad-failover
    ```
 

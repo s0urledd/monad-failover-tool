@@ -16,6 +16,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24.7'
+          cache: false
 
       - name: Tag matches the version in the code
         run: |
@@ -24,7 +25,7 @@ jobs:
           test "v$ver" = "$GITHUB_REF_NAME"
 
       - name: Reproducible release build (linux/amd64)
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w -buildid=' -o monad-failover ./cmd/monad-failover
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o monad-failover ./cmd/monad-failover
 
       # The README is the checksum the operator verifies against. A tag whose
       # README does not match its own build is not published.

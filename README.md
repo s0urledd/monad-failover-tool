@@ -51,7 +51,7 @@ Run as root on the target full node (linux/amd64):
 
 ```bash
 curl -fsSLO https://github.com/s0urledd/monad-failover-tool/releases/download/v2.0.0-rc.1/monad-failover &&
-echo "5a0d3f4e9a2245f8a450146008ec4c3f9e7d1ea2854824bb98779fb356952006  monad-failover" | sha256sum -c - &&
+echo "83c29deca08ef0c21cc9c1d933c62c48258107fd5e100a22408b6f65327a668c  monad-failover" | sha256sum -c - &&
 install -m 755 monad-failover /usr/local/bin/monad-failover
 ```
 
@@ -142,7 +142,7 @@ The release binary is reproducible. With Go 1.24.7 on linux/amd64:
 ```bash
 git clone https://github.com/s0urledd/monad-failover-tool && cd monad-failover-tool
 git checkout v2.0.0-rc.1
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w -buildid=' -o monad-failover ./cmd/monad-failover
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o monad-failover ./cmd/monad-failover
 sha256sum monad-failover
 ```
 
