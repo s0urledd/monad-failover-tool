@@ -32,7 +32,7 @@ See the [validation record](docs/validation.md).
   set in `/home/monad/.env`.
 - Your validator's `secp-backup` and `bls-backup`: the text backups containing
   the secret IKM, not the encrypted `id-secp` / `id-bls` keystores.
-  Place them in `/root/validator-keys` or another private directory on the target
+  Place them in a private directory of your choice on the target
   (directory `700`, files `600`). These are unencrypted secrets; keep off-server
   copies. Hidden manual IKM entry is also available.
 - The validator's SECP and BLS public keys to compare at the confirmation prompt.
@@ -58,11 +58,11 @@ fails, your existing installation stays unchanged.
 
 ## Run
 
-Use the directory holding the validator's backups for both commands:
+Replace `/path/to/validator-backups` with your backup directory in both commands:
 
 ```bash
-monad-failover --dry-run --backup-dir /root/validator-keys
-monad-failover --backup-dir /root/validator-keys
+monad-failover --dry-run --backup-dir "/path/to/validator-backups"
+monad-failover --backup-dir "/path/to/validator-backups"
 ```
 
 Dry-run checks prerequisites and backup format; it does not verify validator
