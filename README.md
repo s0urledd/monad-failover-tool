@@ -1,9 +1,7 @@
 # monad-failover
 
 [![ci](https://github.com/s0urledd/monad-failover-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/s0urledd/monad-failover-tool/actions/workflows/ci.yml)
-[![go](https://img.shields.io/github/go-mod/go-version/s0urledd/monad-failover-tool)](go.mod)
-[![release](https://img.shields.io/github/v/release/s0urledd/monad-failover-tool?include_prereleases)](https://github.com/s0urledd/monad-failover-tool/releases)
-[![go report](https://goreportcard.com/badge/github.com/s0urledd/monad-failover-tool)](https://goreportcard.com/report/github.com/s0urledd/monad-failover-tool)
+[![go](https://img.shields.io/badge/go-1.24.7-00ADD8?logo=go&logoColor=white)](go.mod)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Promotes a synced Monad full node to a validator, following the official
