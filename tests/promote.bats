@@ -59,6 +59,73 @@ make_healthy_env() {
   } > "$BACKUP_ROOT/bls-backup"
 }
 
+@test "uptime: null last round does not interrupt completion or backup export" {
+  make_healthy_env
+  export MOCK_API_RESPONSE="$BATS_TEST_TMPDIR/uptime.json"
+  printf '%s\n' '{"success":true,"uptime":{"validator_name":"MockVal","status":"inactive","uptime_percent":0,"finalized_count":0,"timeout_count":0,"last_round":null}}' > "$MOCK_API_RESPONSE"
+  normal_run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"MockVal is inactive"* ]]
+  [[ "$output" != *"Last round:"* ]]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  grep -q "Keystore secret: $SECP_IKM" "$BACKUP_ROOT/secp-backup"
+  grep -q "Keystore secret: $BLS_IKM" "$BACKUP_ROOT/bls-backup"
+  [ ! -f "$MF_STATE_DIR/state" ]
+}
+
+@test "uptime: missing optional fields do not interrupt backup export" {
+  make_healthy_env
+  export MOCK_API_RESPONSE="$BATS_TEST_TMPDIR/uptime.json"
+  printf '%s\n' '{"success":true,"uptime":{}}' > "$MOCK_API_RESPONSE"
+  normal_run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"validator is unknown"* ]]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  grep -q "Keystore secret: $SECP_IKM" "$BACKUP_ROOT/secp-backup"
+}
+
+@test "mask: all premasked units never cause an empty service start or false completion" {
+  make_healthy_env
+  export MOCK_PREMASKED="monad-bft monad-execution monad-rpc"
+  normal_run
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Every monad unit was already masked"* ]]
+  [[ "$output" == *"monad-bft was already masked, but is required"* ]]
+  [[ "$output" != *"VALIDATOR PROMOTION COMPLETE"* ]]
+  ! grep -q 'systemctl start' "$MOCK_LOG"
+  grep -q '^last_step=7' "$MF_STATE_DIR/state"
+  # The operator resolves the intentional masks; resume verifies and exports.
+  unset MOCK_PREMASKED
+  systemctl unmask monad-bft monad-execution
+  systemctl start monad-bft monad-execution
+  run bash "$SCRIPT" --resume </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  [ "$(systemctl is-enabled monad-rpc)" = masked ]
+  grep -q "Keystore secret: $SECP_IKM" "$BACKUP_ROOT/secp-backup"
+}
+
+@test "IP detection failure gives a usable override and resume finishes" {
+  make_healthy_env
+  export MOCK_IP_FAIL=1
+  run bash "$SCRIPT" --backup-dir "$BACKUP_ROOT" <<EOF
+y
+y
+0xBEEF00000000000000000000000000000000BEEF
+validator-one
+8
+EOF
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--resume --public-ip"* ]]
+  ! grep -q 'systemctl stop' "$MOCK_LOG"
+  run bash "$SCRIPT" --resume --public-ip 203.0.113.7 <<EOF
+STOPPED
+y
+EOF
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+}
+
 @test "--version prints the version" {
   run bash "$SCRIPT" --version
   [ "$status" -eq 0 ]
@@ -1018,9 +1085,12 @@ validator-one
 STOPPED
 y
 EOF
-  grep -q "premasked_units=monad-rpc" "$MF_STATE_DIR/state" \
-    || grep -q "systemctl unmask monad-bft" "$MOCK_LOG"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"VALIDATOR PROMOTION COMPLETE"* ]]
+  [[ "$output" == *"monad-rpc was masked before this run"* ]]
+  grep -q "Keystore secret: $SECP_IKM" "$BACKUP_ROOT/secp-backup"
   ! grep -q "systemctl unmask monad-rpc" "$MOCK_LOG"
+  ! grep -E 'systemctl start .*monad-rpc' "$MOCK_LOG"
 }
 
 # ── Foundation snapshot: sequence suggestion ───────────────
@@ -1534,6 +1604,48 @@ EOF
   [ "$status" -eq 1 ]
   [[ "$output" == *"Cannot uniquely set"* ]]
   ! grep -Eq 'systemctl (stop|start|mask|unmask)' "$MOCK_LOG"
+}
+
+@test "RPC: the live run raises exposure at the end, not in preflight" {
+  make_healthy_env
+  mkdir "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\nprintf "State Recv-Q Send-Q Local Peer\\nLISTEN 0 128 0.0.0.0:8080 0.0.0.0:*\\n"\n' > "$BATS_TEST_TMPDIR/bin/ss"
+  chmod +x "$BATS_TEST_TMPDIR/bin/ss"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  normal_run
+  [ "$status" -eq 0 ]
+  # The operator is told, but after the promotion rather than at step 1, so a
+  # migration in progress is never interrupted by a firewall question.
+  [[ "$output" != *"serving RPC on non-loopback interfaces"* ]]
+  [[ "$output" != *"RPC EXPOSURE CHECK"* ]]
+  local tail="${output##*VALIDATOR PROMOTION COMPLETE}"
+  [[ "$tail" != *"serving RPC on non-loopback interfaces"* ]]
+  [[ "$tail" == *"Block public access to RPC and metrics ports (8080, 8081, 9143, etc.)."* ]]
+  [[ "$tail" == *"Allow trusted sources only."* ]]
+}
+
+@test "RPC: a clean validator gets no exposure note after promotion" {
+  make_healthy_env
+  mkdir "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\nprintf "State Recv-Q Send-Q Local Peer\\nLISTEN 0 128 127.0.0.1:8080 0.0.0.0:*\\n"\n' > "$BATS_TEST_TMPDIR/bin/ss"
+  chmod +x "$BATS_TEST_TMPDIR/bin/ss"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  normal_run
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"serving RPC on non-loopback"* ]]
+  [[ "$output" == *"Block public access to RPC and metrics ports (8080, 8081, 9143, etc.)."* ]]
+}
+
+@test "RPC: the dry run still reports exposure up front" {
+  make_healthy_env
+  mkdir "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\nprintf "State Recv-Q Send-Q Local Peer\\nLISTEN 0 128 0.0.0.0:8080 0.0.0.0:*\\n"\n' > "$BATS_TEST_TMPDIR/bin/ss"
+  chmod +x "$BATS_TEST_TMPDIR/bin/ss"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  run bash "$SCRIPT" --dry-run
+  [[ "$output" == *"RPC EXPOSURE CHECK"* ]]
+  [[ "$output" == *"RPC ports listening on non-loopback interfaces: 8080"* ]]
+  [[ "$output" == *"1 warning(s)"* ]]
 }
 
 @test "RPC: loopback IPv4 and IPv6 listeners do not warn" {

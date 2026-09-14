@@ -65,6 +65,10 @@ case "${1:-}" in
     fi
     exit 0 ;;
   is-active)
+    for u in "${@:2}"; do
+      [[ "$u" == --* ]] && continue
+      [[ -f "$MASKDIR/$u" ]] && exit 3
+    done
     [[ -f "$MARKER" ]] && exit 0 || exit 3 ;;
   *)
     exit 0 ;;

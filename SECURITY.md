@@ -9,21 +9,31 @@ standard system tools. Concretely, it:
 - reads `KEYSTORE_PASSWORD` from `/home/monad/.env` (by parsing the one line, not
   by sourcing the file as code) and reads your `secp-backup` / `bls-backup` files
 - writes only under `/home/monad/monad-bft/config`, `/opt/monad/backup` and
-  `/var/lib/monad-failover` (resume state)
+  `/var/lib/monad-failover` (resume state), plus `/opt/monad/failover-logs`
 - manages only the `monad-bft`, `monad-execution` and `monad-rpc` systemd units
-- makes three kinds of outbound requests, all HTTPS and all optional to the
-  result: `ifconfig.me` to detect the server's public IP; Monad Foundation's
+- makes three kinds of outbound requests, all HTTPS: `ifconfig.me` to detect
+  the server's public IPv4 (bypassed with `--public-ip`); Monad Foundation's
   validator snapshot (`bucket.monadinfra.com/validator-data/<network>.json`) to
   read the last published name record sequence for your key, which is used only
   to suggest a number you can override; and the monval uptime API
-  (`validator-api.huginn.tech`) after cutover to confirm the network sees the
-  validator. Nothing but a public key is ever sent, and a failed call to any of
-  them never blocks the run
+  (`validator-api.huginn.tech`, operated by Huginn) after cutover for a historical
+  view of the validator identity. The lookup includes its public SECP key in
+  the URL. As with any HTTPS request, the endpoint also sees the caller's IP.
+  Snapshot and uptime failures do not block migration; failed IP detection
+  requires an explicit `--public-ip` before signing can continue
 
 It contains no telemetry and never transmits your keys or password anywhere. Secret
 files it creates (key backups, resume state) are created with a `077` umask so they
 are never world-readable, and the keystore password is never written alongside the
 encrypted keystores.
+
+`secp-backup` and `bls-backup` contain **unencrypted secret IKM**, both when you
+provide them and when the tool exports fresh copies after cutover. Anyone with
+those files can reconstruct the validator keys without the keystore password.
+Their private file permissions are not encryption. Store off-server copies in
+an encrypted vault and restrict access to copies left on the node. The separate
+`failover-<timestamp>/` directory holds this target's original encrypted
+keystores and config; it is not a backup of the incoming validator identity.
 
 ## One honest caveat: process arguments
 
@@ -68,9 +78,8 @@ grounds. On startup the script:
   under `/home/monad/.monad-failover`: that path is writable by the `monad`
   account, so it is treated as untrusted and left in place for you to inspect.
 
-If you see one of these refusals on a machine only you administer, it usually
-means an interrupted run and a stale file: restore the node from
-`/opt/monad/backup` if needed, remove the reported path, and start a fresh run.
+Do not remove resume state just to bypass a refusal. If it cannot safely be
+resumed, follow [manual recovery](docs/recovery.md) before starting a fresh run.
 
 ## How a cutover cannot leave a half-swapped node
 
@@ -147,13 +156,15 @@ checks falls back to entering the number yourself, with the reason shown.
 
 ## Services active is not the same as validating
 
-After the swap, every unit must report active or the run fails with the recovery
-steps. Sync is a separate question and gets a bounded window of its own. If the
+After the swap, consensus and execution must report active. RPC must also be
+active unless it was already masked before this run; that operator choice is
+preserved. Missing required services fail with recovery steps. Sync is a
+separate question and gets a bounded window of its own. If the
 node has not caught up in that window the run reports the cutover as complete
 with verification pending, keeps the resume state, and does not print success.
-The monval uptime figure is a 24 hour window keyed on the public key, so it says
-the identity is participating; it is not on its own proof that this new server is
-the one doing it.
+The monval uptime figure is a 24 hour window keyed on the public key. It does
+not prove that this new server is currently participating. Missing fields or
+an inactive result are advisory and do not prevent key backup export.
 
 ## Verifying what you run
 

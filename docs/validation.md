@@ -1,10 +1,10 @@
 # Validation record
 
-## Mainnet migration — September 11, 2026
+## Mainnet migration, September 11, 2026
 
 The operator migrated the Huginn validator to a synced full node on Monad
-mainnet using **monad-failover v1.9.4**. This is the tool version; the supplied
-migration transcript does not identify the installed Monad binary version.
+mainnet using **monad-failover v1.9.4** with **Monad v0.16.2**. The operator
+confirmed the Monad version separately; it is not shown in the supplied transcript.
 
 The supplied run transcript records:
 
@@ -59,15 +59,40 @@ That keeps the mechanism these runs exercised unchanged. It is not a claim that
 v1.9.4 was itself reboot-tested, and identical functions on their own do not
 prove the surrounding call path is identical.
 
+The v1.9.5 changes are covered by mocked regression tests, not another VM
+reboot or mainnet migration. They change service selection/verification for
+pre-existing masks and handling of optional uptime data. The v1.9.4 function
+comparison above applies to that version only.
+
+## Walkthrough images
+
+The README still images are adapted from the operator's original terminal
+screenshots, with matching frames and part of the IP covered. The first image
+removes the old preflight RPC warning; the last shows the updated closing
+reminder. The key-confirmation view shows the complete public keys supplied by
+the operator, matching the updated tool. Added text uses glyphs taken from the terminal captures. These are
+an updated walkthrough, not an exact transcript of the historical run.
+The GIF presents those excerpts as a continuous scrolling walkthrough, revealing
+the recorded answers at each prompt. Terminal text is copied from the images;
+cursor animation and playback pauses are added to make the interaction clear.
+Its timing does not measure elapsed migration time. The cutover excerpt retains
+the wording from the original run, before the later wording simplification.
+
 ## Signer compatibility
 
 A separate operator probe using a throwaway key captured output from an installed
 Monad v0.16.1 signer. Its `self_address` contains the IP alone, with separate
-`self_tcp_port`, `self_udp_port` and `self_auth_port` fields. The tool combines
-the IP and matching TCP/UDP port for config `self_address`, and copies the
-authentication port, sequence and signature from the signer output.
+`self_tcp_port`, `self_udp_port` and `self_auth_port` fields. The tool passes
+the network's documented ports to the signer (TCP 8000, UDP 8000, authenticated
+UDP 8001), reads them back from its output to confirm they round-trip, and
+writes the joined address into config `self_address`. The sequence and the
+signature come from the signer.
 
 The captured format is stored in [the regression fixture](../tests/fixtures/signer-v0.16.1.out).
 Fixture tests validate parsing and config handling; they do not rerun the real
-binary or cryptographically validate a signature. Other Monad versions require
-their own compatibility check.
+binary or cryptographically validate a signature.
+
+Monad v0.16.2 was also used in the successful mainnet migration recorded above,
+including name-record signing and cutover. This is separate from the v0.16.1
+throwaway-key probe. Versions beyond these two require their own compatibility
+check; no separate end-to-end testnet migration is recorded here.

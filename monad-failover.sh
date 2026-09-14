@@ -15,7 +15,7 @@ set -euo pipefail
 # for the instant between open() and chmod. Restrict from the start.
 umask 077
 
-VERSION="1.9.4"
+VERSION="1.9.5"
 
 # ── paths (env-overridable for testing) ────────────────────
 MONAD_HOME="${MONAD_HOME:-/home/monad}"
@@ -367,16 +367,12 @@ check_sync() {
 # Official Monad RPC ports (8080/8081) plus commonly exposed EVM RPC ports.
 RPC_PORTS=(8080 8081 8545 8546 9545 9546 18545 18546)
 
-check_rpc() {
-  RPC_WARNINGS=0
-  step "RPC EXPOSURE CHECK"
-  if ! command -v ss >/dev/null 2>&1; then
-    RPC_WARNINGS=1
-    warn "ss not found — cannot check RPC exposure."
-    echo "  Verify manually that none of these ports listen publicly: ${RPC_PORTS[*]}"
-    return 0
-  fi
-  local listeners exposed=()
+# Echoes the RPC ports reachable from off-host, one per line. Exit 2 means the
+# question could not be answered because ss is missing; callers phrase that
+# themselves. Shared by the dry run and the note printed after a promotion.
+rpc_exposed_ports() {
+  command -v ss >/dev/null 2>&1 || return 2
+  local listeners port
   listeners="$(ss -ltn 2>/dev/null | awk '{print $4}' || true)"
   for port in "${RPC_PORTS[@]}"; do
     if echo "$listeners" | awk -v port="$port" '
@@ -386,9 +382,37 @@ check_rpc() {
       }
       END {exit !found}
     '; then
-      exposed+=("$port")
+      printf '%s\n' "$port"
     fi
   done
+  return 0
+}
+
+# Raised after the promotion, alongside the other things the operator now has
+# to go and do. By this point the machine is a validator, which is when an
+# exposed RPC port actually matters; before the swap it is still a full node.
+rpc_closing_note() {
+  echo
+  warn "Block public access to RPC and metrics ports (8080, 8081, 9143, etc.)."
+  echo "  Allow trusted sources only."
+}
+
+# The dry run asks this before anything has changed, while the box is still a
+# full node. The live run does not: an exposed RPC port blocks nothing, and a
+# warning at step 1 asks an operator mid-migration to stop and think about
+# firewalls. It is raised at the end instead, once the machine really is a
+# validator. See rpc_closing_note.
+check_rpc() {
+  RPC_WARNINGS=0
+  step "RPC EXPOSURE CHECK"
+  local exposed=() out
+  if ! out="$(rpc_exposed_ports)"; then
+    RPC_WARNINGS=1
+    warn "ss not found — cannot check RPC exposure."
+    echo "  Verify manually that none of these ports listen publicly: ${RPC_PORTS[*]}"
+    return 0
+  fi
+  if [[ -n "$out" ]]; then mapfile -t exposed <<< "$out"; fi
   if [[ ${#exposed[@]} -gt 0 ]]; then
     RPC_WARNINGS=1
     warn "RPC ports listening on non-loopback interfaces: ${exposed[*]}"
@@ -671,7 +695,7 @@ refresh_key_backups() {
   if export_key_backup "$SECP_KEY" secp "$se" && export_key_backup "$BLS_KEY" bls "$bl"; then
     ok "Key backups exported: $BACKUP_ROOT/{secp-backup,bls-backup}"
     warn "Store copies of both files OUTSIDE this server (password manager / vault)."
-    echo "  They are the only way to recover this validator's identity."
+    echo "  These files contain unencrypted secret keys. Anyone holding them can use this identity."
   else
     warn "Could not re-export key backups."
     echo "  Previous copies are preserved as *.${ts}.bak in $BACKUP_ROOT."
@@ -681,20 +705,31 @@ refresh_key_backups() {
 
 # Hard health gate after cutover: `systemctl start` returning success does
 # not mean the services survived their first seconds. Wait, then require
-# every unit to be active before the run may call itself complete.
+# consensus and execution to be active. RPC may be deliberately masked by the
+# operator; preserve that choice without treating a stopped validator as healthy.
 # (MF_HEALTH_WAIT exists solely so the test suite can skip the wait.)
 post_verify() {
   step "POST-CUTOVER VERIFICATION"
   sleep "${MF_HEALTH_WAIT:-5}"
-  local svc
+  local svc pre; pre="$(load_state "premasked_units")"
   for svc in "${MONAD_SERVICES[@]}"; do
+    if [[ "$svc" == "monad-rpc" && " $pre " == *" monad-rpc "* ]]; then
+      echo "  monad-rpc was masked before this run; left unchanged."
+      continue
+    fi
+    if [[ " $pre " == *" $svc "* ]] && ! systemctl is-active --quiet "$svc" 2>/dev/null; then
+      die "$svc was already masked, but is required for validation." \
+        "It has not been unmasked automatically. After checking why it was masked:" \
+        "  systemctl unmask $svc && systemctl start $svc" \
+        "Then finish: $0 --resume"
+    fi
     systemctl is-active --quiet "$svc" 2>/dev/null || die \
       "$svc is not active after cutover." \
       "Check:  journalctl -xeu $svc" \
-      "Start:  systemctl start ${MONAD_SERVICES[*]}" \
+      "Start:  systemctl start $svc" \
       "Finish: $0 --resume"
   done
-  ok "All services active"
+  ok "All required services active"
 
   # Active units and a synced, participating node are two different results.
   # Give sync a bounded window instead of judging it five seconds in, and if it
@@ -899,21 +934,28 @@ check_validator_api() {
   fi
 
   local name status uptime fin to last_round
-  name="$(json_str "$resp" validator_name)"
-  status="$(json_str "$resp" status)"
-  uptime="$(json_num "$resp" uptime_percent)"
-  fin="$(json_num "$resp" finalized_count)"
-  to="$(json_num "$resp" timeout_count)"
-  last_round="$(json_num "$resp" last_round)"
+  name="$(json_str "$resp" validator_name || true)"
+  status="$(json_str "$resp" status || true)"
+  uptime="$(json_num "$resp" uptime_percent || true)"
+  fin="$(json_num "$resp" finalized_count || true)"
+  to="$(json_num "$resp" timeout_count || true)"
+  last_round="$(json_num "$resp" last_round || true)"
 
-  ok "${name:-validator} is ${BOLD}${status:-unknown}${RESET} on $NETWORK"
+  if [[ "$status" == "active" ]]; then
+    ok "${name:-validator} is ${BOLD}${status}${RESET} on $NETWORK (uptime API)"
+  else
+    warn "${name:-validator} is ${status:-unknown} on $NETWORK (uptime API)."
+    echo "  Check later: $url"
+  fi
   echo "  Uptime (24h): ${uptime:-?}% (${fin:-?} finalized, ${to:-?} timeout)"
-  [[ -n "$last_round" ]] && echo "  Last round:   $last_round"
+  if [[ -n "$last_round" ]]; then echo "  Last round:   $last_round"; fi
+  return 0
 }
 
 detect_ip() {
   IP="$(public_ip)"
-  [[ -n "$IP" ]] || die "Could not detect a valid public IPv4 address."
+  [[ -n "$IP" ]] || die "Could not detect a valid public IPv4 address." \
+    "Retry with: $0 --resume --public-ip <this-server-public-IPv4>"
   ok "Public IP: $IP"
 }
 
@@ -1083,7 +1125,8 @@ startable_services() {
     case " $pre " in *" $svc "*) continue ;; esac
     out+=("$svc")
   done
-  printf '%s\n' "${out[@]}"
+  if [[ ${#out[@]} -gt 0 ]]; then printf '%s\n' "${out[@]}"; fi
+  return 0
 }
 
 stop_monad_services() {
@@ -1233,11 +1276,10 @@ promote() {
     check_sync
   fi
 
-  # ── 1. Sync + RPC ──
+  # ── 1. Sync ──
   if ! $RESUME || ! completed_step 1; then
     phase 1 "PREFLIGHT"
     check_sync
-    check_rpc
     save_state "last_step" "1"
   fi
 
@@ -1323,8 +1365,8 @@ promote() {
     [[ -n "$BLS_PUB" ]]  || die "Could not recover BLS public key"
 
     echo
-    echo "  SECP: ${BOLD}${SECP_PUB:0:46}...${RESET}"
-    echo "  BLS:  ${BOLD}${BLS_PUB:0:46}...${RESET}"
+    echo "  SECP: ${BOLD}${SECP_PUB}${RESET}"
+    echo "  BLS:  ${BOLD}${BLS_PUB}${RESET}"
     echo
     confirm_yn "do these match your validator keys?" || die "Key mismatch — aborting."
     ok "Keys verified"
@@ -1472,11 +1514,7 @@ promote() {
     echo "└────────────────────────────────────────────────────────────"
     echo
 
-    warn "The old validator MUST be ${BOLD}stopped or fully offline${RESET} before cutover."
-    echo "  Running two nodes with the same keys corrupts this validator's"
-    echo "  consensus participation and name record."
-    echo
-    echo "  If the old server is reachable, stop it now:"
+    warn "Stop the old validator before confirming cutover."
     echo "      ${BOLD}systemctl stop monad-bft monad-execution monad-rpc${RESET}"
     echo
     local confirm_stopped
@@ -1485,9 +1523,8 @@ promote() {
     ok "Old validator confirmed stopped or offline"
 
     echo
-    warn "${BOLD}POINT OF NO RETURN${RESET}"
-    echo "  The next step stops services, swaps in the validator keys, and starts."
-    echo "  After this the old validator MUST NOT be restarted with the same keys."
+    echo "  Preparation is complete. Confirm when you are ready to begin the switch."
+    echo "  The tool will verify the prepared files, replace the identity and start services."
     echo
     confirm_yn "proceed with cutover?" || die "Aborted."
 
@@ -1603,6 +1640,8 @@ promote() {
   echo
   warn "If you have downstream full nodes, update this validator's"
   echo "  name record in their node.toml to maintain connectivity."
+
+  rpc_closing_note
 
   echo
   warn "VDP: validators are required to push metrics to Monad Foundation's"
