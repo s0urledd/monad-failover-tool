@@ -71,8 +71,11 @@ screenshots, with matching frames and part of the IP covered. The first image
 removes the old preflight RPC warning; the last shows the updated closing
 reminder. Added text uses glyphs taken from the terminal captures. These are
 an updated walkthrough, not an exact transcript of the historical run.
-The GIF is unchanged and replays the original excerpts with illustrative
-timing; it is not a recording of elapsed migration time.
+The GIF presents those excerpts as a continuous scrolling walkthrough, revealing
+the recorded answers at each prompt. Terminal text is copied from the images;
+cursor animation and playback pauses are added to make the interaction clear.
+Its timing does not measure elapsed migration time. The cutover excerpt retains
+the wording from the original run, before the later wording simplification.
 
 ## Signer compatibility
 

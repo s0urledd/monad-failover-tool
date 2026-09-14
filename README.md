@@ -88,9 +88,9 @@ server. See [recovery](docs/recovery.md) if resume cannot finish.
 
 ## Migration walkthrough
 
-![Mainnet migration screenshot replay](docs/mainnet-migration.gif)
+![Mainnet migration walkthrough](docs/mainnet-migration.gif)
 
-The still images reflect the updated flow; the GIF shows the earlier run.
+The walkthrough follows the migration from preparation through confirmation and completion.
 
 <details>
 <summary>View the updated terminal walkthrough</summary>
