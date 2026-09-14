@@ -33,11 +33,11 @@ func TestLoadKeystorePassword(t *testing.T) {
 		{"KEYSTORE_PASSWORD=$(touch /tmp/pwned)\n", "$(touch /tmp/pwned)"},
 	} {
 		p := write(t, ".env", tc.env)
-		if got := LoadKeystorePassword(p); got != tc.want {
+		if got := string(LoadKeystorePassword(p)); got != tc.want {
 			t.Errorf("%q: got %q want %q", tc.env, got, tc.want)
 		}
 	}
-	if got := LoadKeystorePassword("/nonexistent/.env"); got != "" {
+	if got := string(LoadKeystorePassword("/nonexistent/.env")); got != "" {
 		t.Errorf("missing file: got %q", got)
 	}
 }
@@ -57,8 +57,8 @@ func TestValidateIKM(t *testing.T) {
 		{"", "", false},
 		{"zz" + hex64[2:], "", false},
 	} {
-		got, ok := ValidateIKM(tc.in)
-		if ok != tc.ok || got != tc.want {
+		got, ok := ValidateIKM([]byte(tc.in))
+		if ok != tc.ok || string(got) != tc.want {
 			t.Errorf("ValidateIKM(%q) = %q,%v want %q,%v", tc.in, got, ok, tc.want, tc.ok)
 		}
 	}
@@ -75,7 +75,7 @@ func TestExtractIKMFromBackup(t *testing.T) {
 		{"", ""},
 	} {
 		p := write(t, "backup", tc.body)
-		if got := ExtractIKMFromBackup(p); got != tc.want {
+		if got := string(ExtractIKMFromBackup(p)); got != tc.want {
 			t.Errorf("%q: got %q want %q", tc.body, got, tc.want)
 		}
 	}

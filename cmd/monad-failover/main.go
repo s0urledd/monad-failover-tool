@@ -10,6 +10,7 @@ import (
 	"os"
 	"syscall"
 
+	"github.com/s0urledd/monad-failover-tool/internal/harden"
 	"github.com/s0urledd/monad-failover-tool/internal/monad"
 	"github.com/s0urledd/monad-failover-tool/internal/netinfo"
 	"github.com/s0urledd/monad-failover-tool/internal/paths"
@@ -45,6 +46,9 @@ func run(args []string) int {
 	// Secrets (key backups, state) must never be created world-readable,
 	// not even for the instant between open() and chmod.
 	syscall.Umask(0o077)
+	// No core dump, not dumpable, and as root no paging out: a secret this
+	// process holds cannot leave it through those routes.
+	harden.Apply(os.Geteuid())
 
 	c := ui.New(os.Stdout, os.Stderr, os.Stdin)
 	argv0 := args[0]

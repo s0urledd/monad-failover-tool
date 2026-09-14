@@ -16,10 +16,22 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
+	"runtime/debug"
 	"strings"
 
 	"github.com/s0urledd/monad-failover-tool/internal/ui"
 )
+
+// scrub runs after every command that carried a secret on its argument
+// vector. The strings built for exec are unreachable by then; a collection
+// plus a return of free memory to the kernel takes them out of this
+// process's address space where the allocator allows. It is a narrowing,
+// not a guarantee: SECURITY.md says so.
+func scrub() {
+	runtime.GC()
+	debug.FreeOSMemory()
+}
 
 // Have reports whether cmd is on PATH.
 func Have(cmd string) bool {
@@ -27,20 +39,23 @@ func Have(cmd string) bool {
 	return err == nil
 }
 
-// Tools carries the keystore password for the key commands.
+// Tools carries the keystore password for the key commands. The password
+// is held as bytes so the caller can zero it when the run ends.
 type Tools struct {
-	Password string
+	Password []byte
 	EnvFile  string // named in error messages
 }
 
 // ImportKey creates a keystore at path from the IKM. All output is discarded.
-func (t Tools) ImportKey(ikm string, path string) error {
+func (t Tools) ImportKey(ikm []byte, path string) error {
 	cmd := exec.Command("monad-keystore", "import",
-		"--ikm", ikm,
+		"--ikm", string(ikm),
 		"--keystore-path", path,
-		"--password", t.Password)
+		"--password", string(t.Password))
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	scrub()
+	if err != nil {
 		return ui.Die("monad-keystore import failed for "+path+".",
 			"(Its output is suppressed so secrets can never reach the run log.)",
 			"Check the keystore password in "+t.EnvFile+" and the IKM source, then re-run.")
@@ -60,22 +75,38 @@ func (t Tools) RecoverPubkey(path, keyType string) string {
 		label = "Secp public key"
 	}
 	cmd := exec.Command("monad-keystore", "recover",
-		"--password", t.Password,
+		"--password", string(t.Password),
 		"--keystore-path", path,
 		"--key-type", keyType)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, io.Discard
 	_ = cmd.Run()
-	for _, line := range strings.Split(out.String(), "\n") {
-		if strings.Contains(strings.ToLower(line), strings.ToLower(label)) {
-			f := strings.Fields(line)
-			if len(f) == 0 {
-				return ""
-			}
-			return f[len(f)-1]
+	// The output also carries the secret ("Keystore secret: ..."). Only the
+	// public key line is copied out; the buffer is zeroed before returning.
+	defer scrub()
+	defer ui.Zero(out.Bytes())
+	for _, line := range bytes.Split(out.Bytes(), []byte("\n")) {
+		if !containsFold(line, []byte(label)) {
+			continue
 		}
+		f := bytes.Fields(line)
+		if len(f) == 0 {
+			return ""
+		}
+		return string(f[len(f)-1])
 	}
 	return ""
+}
+
+// containsFold is a case-insensitive substring test that allocates nothing,
+// so no lowercase copy of a line holding a secret is ever made.
+func containsFold(line, label []byte) bool {
+	for i := 0; i+len(label) <= len(line); i++ {
+		if bytes.EqualFold(line[i:i+len(label)], label) {
+			return true
+		}
+	}
+	return false
 }
 
 // ExportBackup writes the official-format backup of the keystore at path to
@@ -88,11 +119,12 @@ func (t Tools) ExportBackup(path, keyType, out string) error {
 		return err
 	}
 	cmd := exec.Command("monad-keystore", "recover",
-		"--password", t.Password,
+		"--password", string(t.Password),
 		"--keystore-path", path,
 		"--key-type", keyType)
 	cmd.Stdout, cmd.Stderr = f, io.Discard
 	runErr := cmd.Run()
+	scrub()
 	closeErr := f.Close()
 	if runErr != nil || closeErr != nil {
 		os.Remove(partial)
@@ -121,10 +153,12 @@ func (t Tools) SignNameRecord(ip, seq, keystorePath string) (string, error) {
 		"--authenticated-udp-port", "8001",
 		"--self-record-seq-num", seq,
 		"--keystore-path", keystorePath,
-		"--password", t.Password)
+		"--password", string(t.Password))
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, io.Discard
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	scrub()
+	if err != nil {
 		return "", ui.Die("monad-sign-name-record failed.",
 			"(Its error output is suppressed so secrets can never reach the run log.)",
 			"Check the keystore password in "+t.EnvFile+" and the monad version, then re-run.")

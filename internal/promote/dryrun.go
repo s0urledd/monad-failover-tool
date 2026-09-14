@@ -72,7 +72,8 @@ func DryRun(c *ui.Console, p paths.Paths, keySourceDir, version string) int {
 	}
 	if _, err := os.Stat(p.EnvFile); err == nil {
 		c.OK(".env")
-		if nodeconf.LoadKeystorePassword(p.EnvFile) != "" {
+		if pw := nodeconf.LoadKeystorePassword(p.EnvFile); len(pw) > 0 {
+			ui.Zero(pw)
 			c.OK("KEYSTORE_PASSWORD set")
 		} else {
 			c.Cross("KEYSTORE_PASSWORD not set in " + p.EnvFile)
@@ -115,7 +116,11 @@ func DryRun(c *ui.Console, p paths.Paths, keySourceDir, version string) int {
 	for _, f := range []string{"secp-backup", "bls-backup"} {
 		path := dir + "/" + f
 		if _, err := os.Stat(path); err == nil {
-			if _, ok := nodeconf.ValidateIKM(nodeconf.ExtractIKMFromBackup(path)); ok {
+			raw := nodeconf.ExtractIKMFromBackup(path)
+			ikm, ok := nodeconf.ValidateIKM(raw)
+			ui.Zero(raw)
+			ui.Zero(ikm)
+			if ok {
 				c.OK(path + " (valid IKM format; validator identity NOT verified)")
 			} else {
 				c.Warn(path + " exists but contains no valid IKM")

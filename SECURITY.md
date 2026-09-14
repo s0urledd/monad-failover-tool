@@ -55,12 +55,28 @@ run log, so even an error path that echoed its arguments could not land there.
 
 ## A second caveat: secrets in memory
 
-The IKM typed or read from a backup is held in a buffer this code zeroes after
-the import. The copy that Go makes to pass it to `monad-keystore` as an argument
-is a string the garbage collector owns, and it cannot be zeroed on request. The
-same holds for the keystore password. Nothing here is written to disk or swap
-by the tool, but a memory dump of the process while a key command runs could
-contain those values. It is stated here rather than papered over.
+The keystore password and the IKM pass through this process. What the tool
+does about that inside its own memory:
+
+- Both are held as byte buffers and are turned into strings only for the
+  instant a child process's argument vector is built. Every buffer this code
+  owns is zeroed as soon as it is no longer needed: the `.env` contents, the
+  backup file contents, a typed IKM, the parsed values, and the output of
+  `monad-keystore recover`, which carries the secret alongside the public
+  key. The password is zeroed when the run ends.
+- After every command that carried a secret on its argument vector, the
+  garbage collector runs and free memory is returned to the kernel.
+- The process cannot dump core and is not dumpable, so no crash file carries
+  the values. As root its memory is locked and never paged out to swap.
+
+What it cannot do: the copy Go makes of each argument for `execve` belongs to
+the runtime. It is collected, not zeroed, and can stay in a reused page until
+something overwrites it. A memory image of the process taken while a key
+command runs, or shortly after, can contain the values. Anyone able to take
+such an image is root, and root already holds the password in `.env` and the
+IKM in the backup files; what the measures above close are the routes by
+which memory leaves the machine on its own, core dumps and swap. A VM
+snapshot is outside their reach.
 
 ## Resume state is a root trust boundary
 
@@ -183,8 +199,8 @@ an inactive result are advisory and do not prevent key backup export.
 ## Verifying what you run
 
 - Compare `sha256sum /usr/local/bin/monad-failover` against the checksum in the
-  README. The build is reproducible: with Go 1.24.7 on linux/amd64, the command
-  in the README's "Build from source" section yields the same bytes. CI builds
+  README. The build is reproducible: with Go 1.24.7 on linux/amd64, the
+  source install in the README yields the same bytes. CI builds
   the release the same way and fails any change where the README checksum and
   the build drift apart, and the release workflow refuses to publish a binary
   whose checksum differs from the tagged README.

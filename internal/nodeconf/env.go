@@ -4,38 +4,43 @@
 package nodeconf
 
 import (
-	"bufio"
+	"bytes"
 	"os"
-	"strings"
+
+	"github.com/s0urledd/monad-failover-tool/internal/ui"
 )
 
 // LoadKeystorePassword reads KEYSTORE_PASSWORD from the .env file without
-// sourcing it. The file is owned by the monad account; executing it as root
-// would run anything a compromised account placed there. Only the one value
-// is needed. Returns "" when the variable is absent.
-func LoadKeystorePassword(envFile string) string {
-	f, err := os.Open(envFile)
+// executing it. The file is owned by the monad account; executing it as
+// root would run anything a compromised account placed there. Only the one
+// value is needed. The file buffer is zeroed before returning; the caller
+// zeroes the result when done. nil when the variable is absent.
+func LoadKeystorePassword(envFile string) []byte {
+	data, err := os.ReadFile(envFile)
 	if err != nil {
-		return ""
+		return nil
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		line := sc.Text()
-		if !strings.HasPrefix(line, "KEYSTORE_PASSWORD=") {
+	defer ui.Zero(data)
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if !bytes.HasPrefix(line, []byte("KEYSTORE_PASSWORD=")) {
 			continue
 		}
-		val := strings.TrimPrefix(line, "KEYSTORE_PASSWORD=")
+		val := bytes.TrimPrefix(line, []byte("KEYSTORE_PASSWORD="))
 		// A .env saved with CRLF endings carries a trailing \r that would
 		// defeat the quote strip and end up inside the password.
-		val = strings.TrimSuffix(val, "\r")
+		val = bytes.TrimSuffix(val, []byte("\r"))
 		switch {
-		case len(val) >= 2 && strings.HasPrefix(val, "'") && strings.HasSuffix(val, "'"):
+		case len(val) >= 2 && val[0] == '\'' && val[len(val)-1] == '\'':
 			val = val[1 : len(val)-1]
-		case len(val) >= 2 && strings.HasPrefix(val, `"`) && strings.HasSuffix(val, `"`):
+		case len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"':
 			val = val[1 : len(val)-1]
 		}
-		return val
+		if len(val) == 0 {
+			return nil
+		}
+		out := make([]byte, len(val))
+		copy(out, val)
+		return out
 	}
-	return ""
+	return nil
 }

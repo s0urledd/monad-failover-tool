@@ -22,6 +22,9 @@ First release candidate.
 - Test suite of 104 functions, including in-process flow tests that drive the
   full migration against mock Monad binaries and inject faults between file
   placements. Runs without root, network or systemd.
+- Secrets are held as bytes and zeroed after use; free memory is returned to
+  the kernel after every command that carried a secret; the process cannot
+  dump core, is not dumpable and, as root, is never paged out to swap.
 - Not yet used on a live network.
 
 Releases before 2.0 were a shell script; their history is at the `v1.9.5` tag.

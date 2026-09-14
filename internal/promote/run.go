@@ -161,9 +161,10 @@ func (r *Run) Promote() error {
 		return ui.Die(".env not found: " + r.p.EnvFile)
 	}
 	pw := nodeconf.LoadKeystorePassword(r.p.EnvFile)
-	if pw == "" {
+	if len(pw) == 0 {
 		return ui.Die("KEYSTORE_PASSWORD not set in " + r.p.EnvFile)
 	}
+	defer ui.Zero(pw)
 	r.tools = monad.Tools{Password: pw, EnvFile: r.p.EnvFile}
 
 	if r.opt.Resume {
@@ -411,7 +412,8 @@ func (r *Run) importKeys() error {
 		}
 	}
 
-	var secpIKM, blsIKM string
+	var secpIKM, blsIKM []byte
+	defer func() { ui.Zero(secpIKM); ui.Zero(blsIKM) }()
 	if src != "-" {
 		r.c.Step("READ KEY BACKUP FILES")
 		secpFile := filepath.Join(src, "secp-backup")
@@ -422,10 +424,16 @@ func (r *Run) importKeys() error {
 			}
 		}
 		var ok bool
-		if secpIKM, ok = nodeconf.ValidateIKM(nodeconf.ExtractIKMFromBackup(secpFile)); !ok {
+		raw := nodeconf.ExtractIKMFromBackup(secpFile)
+		secpIKM, ok = nodeconf.ValidateIKM(raw)
+		ui.Zero(raw)
+		if !ok {
 			return ui.Die("Could not extract a valid SECP IKM from " + secpFile)
 		}
-		if blsIKM, ok = nodeconf.ValidateIKM(nodeconf.ExtractIKMFromBackup(blsFile)); !ok {
+		raw = nodeconf.ExtractIKMFromBackup(blsFile)
+		blsIKM, ok = nodeconf.ValidateIKM(raw)
+		ui.Zero(raw)
+		if !ok {
 			return ui.Die("Could not extract a valid BLS IKM from " + blsFile)
 		}
 		r.c.OK("IKM secrets extracted from backup files")
@@ -436,7 +444,7 @@ func (r *Run) importKeys() error {
 		if err != nil {
 			return err
 		}
-		v, ok := nodeconf.ValidateIKM(string(raw))
+		v, ok := nodeconf.ValidateIKM(raw)
 		ui.Zero(raw)
 		if !ok {
 			return ui.Die("SECP IKM must be 64 hex characters")
@@ -446,7 +454,7 @@ func (r *Run) importKeys() error {
 		if err != nil {
 			return err
 		}
-		v, ok = nodeconf.ValidateIKM(string(raw))
+		v, ok = nodeconf.ValidateIKM(raw)
 		ui.Zero(raw)
 		if !ok {
 			return ui.Die("BLS IKM must be 64 hex characters")
@@ -464,7 +472,8 @@ func (r *Run) importKeys() error {
 		return err
 	}
 	r.c.OK("BLS key imported to id-bls.new")
-	secpIKM, blsIKM = "", ""
+	ui.Zero(secpIKM)
+	ui.Zero(blsIKM)
 
 	r.secpPub = r.tools.RecoverPubkey(r.d.SecpNew, "secp")
 	r.blsPub = r.tools.RecoverPubkey(r.d.BlsNew, "bls")

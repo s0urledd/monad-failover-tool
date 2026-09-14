@@ -1,6 +1,9 @@
 # monad-failover
 
 [![ci](https://github.com/s0urledd/monad-failover-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/s0urledd/monad-failover-tool/actions/workflows/ci.yml)
+[![go](https://img.shields.io/github/go-mod/go-version/s0urledd/monad-failover-tool)](go.mod)
+[![release](https://img.shields.io/github/v/release/s0urledd/monad-failover-tool?include_prereleases)](https://github.com/s0urledd/monad-failover-tool/releases)
+[![go report](https://goreportcard.com/badge/github.com/s0urledd/monad-failover-tool)](https://goreportcard.com/report/github.com/s0urledd/monad-failover-tool)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Promotes a synced Monad full node to a validator, following the official
@@ -45,18 +48,36 @@ exceeds the suggestion. Without a usable record, enter the number yourself.
 
 ## Install
 
-Run as root on the target full node (linux/amd64):
+Prebuilt binary (linux/amd64), verified against the checksum in this README.
+Run as root on the target full node:
 
 ```bash
 curl -fsSLO https://github.com/s0urledd/monad-failover-tool/releases/download/v2.0.0-rc.1/monad-failover &&
-echo "1c011100f615158e4f179d4729aa2fd571c4ec42fc87b9e5ee6c17812ca2fcda  monad-failover" | sha256sum -c - &&
+echo "fb73459d4850339c76407fdb8e42581bfea798b7c7cc6b1c41ba78ed636aaa38  monad-failover" | sha256sum -c - &&
 install -m 755 monad-failover /usr/local/bin/monad-failover
 ```
 
+From source, with Go 1.24.7. The build is reproducible and gives the identical
+binary and checksum:
+
+```bash
+git clone https://github.com/s0urledd/monad-failover-tool && cd monad-failover-tool
+git checkout v2.0.0-rc.1
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o monad-failover ./cmd/monad-failover
+sha256sum monad-failover
+install -m 755 monad-failover /usr/local/bin/monad-failover
+```
+
+Or, with Go installed, `go install github.com/s0urledd/monad-failover-tool/cmd/monad-failover@v2.0.0-rc.1`;
+the Go checksum database verifies the source and the binary lands in
+`$(go env GOPATH)/bin`.
+
 The checksum is verified before installation. If the download or verification
-fails, your existing installation stays unchanged. The binary is static and
-needs no runtime; the commands it calls are `systemctl`, `monad-keystore`,
-`monad-sign-name-record` and, for sync checks, `monad-status`.
+fails, your existing installation stays unchanged. CI builds the release the
+same way and fails any change where the README checksum and the build drift
+apart. The binary is static and needs no runtime; the commands it calls are
+`systemctl`, `monad-keystore`, `monad-sign-name-record` and, for sync checks,
+`monad-status`.
 
 ## Run
 
@@ -102,22 +123,6 @@ TCP/UDP `8000` and authenticated UDP `8001`. Custom P2P ports are not supported.
 
 [SECURITY.md](SECURITY.md) explains key handling and external requests, including
 the optional monval uptime lookup operated by Huginn.
-
-## Build from source and verify
-
-The release binary is reproducible. With Go 1.24.7 on linux/amd64:
-
-```bash
-git clone https://github.com/s0urledd/monad-failover-tool && cd monad-failover-tool
-git checkout v2.0.0-rc.1
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o monad-failover ./cmd/monad-failover
-sha256sum monad-failover
-```
-
-The checksum matches the one in the install command above and the
-`checksums.txt` attached to the release. CI builds the same way and fails
-any change where the README checksum and the build drift apart.
-`go test ./...` runs the test suite without root, network or systemd.
 
 ## Uninstall
 
