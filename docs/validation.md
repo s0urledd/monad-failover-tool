@@ -69,7 +69,8 @@ comparison above applies to that version only.
 The README still images are adapted from the operator's original terminal
 screenshots, with matching frames and part of the IP covered. The first image
 removes the old preflight RPC warning; the last shows the updated closing
-reminder. Added text uses glyphs taken from the terminal captures. These are
+reminder. The key-confirmation view shows the complete public keys supplied by
+the operator, matching the updated tool. Added text uses glyphs taken from the terminal captures. These are
 an updated walkthrough, not an exact transcript of the historical run.
 The GIF presents those excerpts as a continuous scrolling walkthrough, revealing
 the recorded answers at each prompt. Terminal text is copied from the images;
